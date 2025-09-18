@@ -1,38 +1,14 @@
 use gpui::{
     App, Application, Bounds, Context, Corners, Hsla, MouseButton, Pixels, SharedString, Size,
-    Window, WindowBounds, WindowKind, WindowOptions, actions, div, prelude::*, px, rgb, size,
+    Window, WindowBounds, WindowKind, WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_component::{self, Root, TitleBar};
-use rbeaver::Assets;
-
-actions!(window, [Quit]);
-
-struct MainWindow {
-    title: SharedString,
-}
-
-impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex_col()
-            .size_full()
-            .bg(rgb(0xffffff))
-            .child(
-                TitleBar::new()
-                    .child(div().flex().items_center().child(self.title.clone()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .child(div().ml_auto().w(px(12.)).h_full()),
-                    ),
-            )
-    }
-}
+use rbeaver::{Assets, MainWindow, init_actions};
 
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         gpui_component::init(cx);
+        init_actions(cx);
 
         let mut window_size = size(px(1600.0), px(1200.0));
         if let Some(display) = cx.primary_display() {
@@ -59,9 +35,7 @@ fn main() {
         };
 
         cx.open_window(options, |window, cx| {
-            let view = cx.new(|_| MainWindow {
-                title: "RBeaver".into(),
-            });
+            let view = cx.new(|cx| MainWindow::new("RBeaver".into(), cx));
             cx.new(|cx| Root::new(view.into(), window, cx))
         })
         .unwrap();

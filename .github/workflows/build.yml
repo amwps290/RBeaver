@@ -1,0 +1,216 @@
+name: Build RBeaver
+
+# Only trigger manually
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (optional)'
+        required: false
+        default: ''
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+        - release
+        - debug
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: rbeaver
+            asset_name: rbeaver-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: rbeaver.exe
+            asset_name: rbeaver-windows-x86_64.exe
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libfontconfig1-dev \
+          libfreetype6-dev \
+          libxcb-composite0-dev \
+          libxcb-damage0-dev \
+          libxcb-dpms0-dev \
+          libxcb-dri2-0-dev \
+          libxcb-dri3-dev \
+          libxcb-glx0-dev \
+          libxcb-present-dev \
+          libxcb-randr0-dev \
+          libxcb-record0-dev \
+          libxcb-render0-dev \
+          libxcb-res0-dev \
+          libxcb-screensaver0-dev \
+          libxcb-shape0-dev \
+          libxcb-shm0-dev \
+          libxcb-sync-dev \
+          libxcb-xf86dri0-dev \
+          libxcb-xfixes0-dev \
+          libxcb-xinput-dev \
+          libxcb-xkb-dev \
+          libxcb-xtest0-dev \
+          libxcb-xv0-dev \
+          libxcb-xvmc0-dev \
+          libxcb1-dev \
+          libxkbcommon-x11-dev \
+          libxkbcommon-dev \
+          libwayland-dev \
+          pkg-config
+
+    - name: Cache cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build (Release)
+      if: github.event.inputs.build_type == 'release'
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Build (Debug)
+      if: github.event.inputs.build_type == 'debug'
+      run: cargo build --target ${{ matrix.target }}
+
+    - name: Prepare artifact (Release)
+      if: github.event.inputs.build_type == 'release'
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+        else
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+          chmod +x artifacts/${{ matrix.asset_name }}
+        fi
+
+    - name: Prepare artifact (Debug)
+      if: github.event.inputs.build_type == 'debug'
+      shell: bash
+      run: |
+        mkdir -p artifacts
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          cp target/${{ matrix.target }}/debug/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}-debug
+        else
+          cp target/${{ matrix.target }}/debug/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}-debug
+          chmod +x artifacts/${{ matrix.asset_name }}-debug
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: rbeaver-${{ matrix.target }}-${{ github.event.inputs.build_type }}
+        path: artifacts/
+
+    - name: Run tests
+      run: cargo test --target ${{ matrix.target }} --verbose
+
+  # Create release if tag is provided
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event.inputs.release_tag != '' && github.event.inputs.build_type == 'release'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: ./artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -la ./artifacts
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        release_name: RBeaver ${{ github.event.inputs.release_tag }}
+        body: |
+          ## RBeaver Release ${{ github.event.inputs.release_tag }}
+
+          ### Features
+          - PostgreSQL database management GUI
+          - Connection management with secure storage
+          - SQL editor with syntax highlighting (planned)
+          - Database schema exploration
+          - Cross-platform support (Windows, Linux)
+
+          ### Installation
+
+          #### Linux
+          1. Download `rbeaver-linux-x86_64`
+          2. Make it executable: `chmod +x rbeaver-linux-x86_64`
+          3. Run: `./rbeaver-linux-x86_64`
+
+          #### Windows
+          1. Download `rbeaver-windows-x86_64.exe`
+          2. Double-click to run
+
+          ### Requirements
+          - Linux: Modern X11 or Wayland desktop environment
+          - Windows: Windows 10 or later
+          - PostgreSQL server (for database connections)
+
+          ### Database Support
+          - PostgreSQL (all versions)
+          - Connection pooling with deadpool-postgres
+          - SQLx integration for advanced queries
+          - SSL/TLS support
+
+          Built with ❤️ using Rust and GPUI.
+        draft: false
+        prerelease: false
+
+    - name: Upload Linux Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./artifacts/rbeaver-x86_64-unknown-linux-gnu-release/rbeaver-linux-x86_64
+        asset_name: rbeaver-linux-x86_64
+        asset_content_type: application/octet-stream
+
+    - name: Upload Windows Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./artifacts/rbeaver-x86_64-pc-windows-msvc-release/rbeaver-windows-x86_64.exe
+        asset_name: rbeaver-windows-x86_64.exe
+        asset_content_type: application/octet-stream

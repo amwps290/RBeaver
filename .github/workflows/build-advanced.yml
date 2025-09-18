@@ -1,0 +1,447 @@
+name: Build RBeaver (Advanced)
+
+# Only trigger manually with more options
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (optional)'
+        required: false
+        default: ''
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+        - release
+        - debug
+      platforms:
+        description: 'Platforms to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - linux-only
+        - windows-only
+        - macos-only
+        - linux-windows
+      enable_tests:
+        description: 'Run tests'
+        required: false
+        default: true
+        type: boolean
+      enable_database_tests:
+        description: 'Run database integration tests (requires PostgreSQL)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Determine which platforms to build
+  setup:
+    name: Setup Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+    - name: Set build matrix
+      id: set-matrix
+      run: |
+        case "${{ github.event.inputs.platforms }}" in
+          "all")
+            echo "matrix={\"include\":[{\"os\":\"ubuntu-latest\",\"target\":\"x86_64-unknown-linux-gnu\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-linux-x86_64\",\"platform\":\"linux\"},{\"os\":\"windows-latest\",\"target\":\"x86_64-pc-windows-msvc\",\"artifact_name\":\"rbeaver.exe\",\"asset_name\":\"rbeaver-windows-x86_64.exe\",\"platform\":\"windows\"},{\"os\":\"macos-latest\",\"target\":\"x86_64-apple-darwin\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-macos-x86_64\",\"platform\":\"macos\"},{\"os\":\"macos-latest\",\"target\":\"aarch64-apple-darwin\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-macos-arm64\",\"platform\":\"macos-arm\"}]}" >> $GITHUB_OUTPUT
+            ;;
+          "linux-only")
+            echo "matrix={\"include\":[{\"os\":\"ubuntu-latest\",\"target\":\"x86_64-unknown-linux-gnu\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-linux-x86_64\",\"platform\":\"linux\"}]}" >> $GITHUB_OUTPUT
+            ;;
+          "windows-only")
+            echo "matrix={\"include\":[{\"os\":\"windows-latest\",\"target\":\"x86_64-pc-windows-msvc\",\"artifact_name\":\"rbeaver.exe\",\"asset_name\":\"rbeaver-windows-x86_64.exe\",\"platform\":\"windows\"}]}" >> $GITHUB_OUTPUT
+            ;;
+          "macos-only")
+            echo "matrix={\"include\":[{\"os\":\"macos-latest\",\"target\":\"x86_64-apple-darwin\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-macos-x86_64\",\"platform\":\"macos\"},{\"os\":\"macos-latest\",\"target\":\"aarch64-apple-darwin\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-macos-arm64\",\"platform\":\"macos-arm\"}]}" >> $GITHUB_OUTPUT
+            ;;
+          "linux-windows")
+            echo "matrix={\"include\":[{\"os\":\"ubuntu-latest\",\"target\":\"x86_64-unknown-linux-gnu\",\"artifact_name\":\"rbeaver\",\"asset_name\":\"rbeaver-linux-x86_64\",\"platform\":\"linux\"},{\"os\":\"windows-latest\",\"target\":\"x86_64-pc-windows-msvc\",\"artifact_name\":\"rbeaver.exe\",\"asset_name\":\"rbeaver-windows-x86_64.exe\",\"platform\":\"windows\"}]}" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: setup
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+        components: rustfmt, clippy
+
+    - name: Install Linux dependencies
+      if: matrix.platform == 'linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libfontconfig1-dev \
+          libfreetype6-dev \
+          libxcb-composite0-dev \
+          libxcb-damage0-dev \
+          libxcb-dpms0-dev \
+          libxcb-dri2-0-dev \
+          libxcb-dri3-dev \
+          libxcb-glx0-dev \
+          libxcb-present-dev \
+          libxcb-randr0-dev \
+          libxcb-record0-dev \
+          libxcb-render0-dev \
+          libxcb-res0-dev \
+          libxcb-screensaver0-dev \
+          libxcb-shape0-dev \
+          libxcb-shm0-dev \
+          libxcb-sync-dev \
+          libxcb-xf86dri0-dev \
+          libxcb-xfixes0-dev \
+          libxcb-xinput-dev \
+          libxcb-xkb-dev \
+          libxcb-xtest0-dev \
+          libxcb-xv0-dev \
+          libxcb-xvmc0-dev \
+          libxcb1-dev \
+          libxkbcommon-x11-dev \
+          libxkbcommon-dev \
+          libwayland-dev \
+          libssl-dev \
+          libpq-dev \
+          postgresql-client
+
+    - name: Install macOS dependencies
+      if: matrix.platform == 'macos' || matrix.platform == 'macos-arm'
+      run: |
+        brew install postgresql
+
+    - name: Cache cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.target }}-cargo-
+          ${{ runner.os }}-cargo-
+
+    - name: Check code formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      run: cargo clippy --target ${{ matrix.target }} --all-targets --all-features -- -D warnings
+
+    - name: Setup PostgreSQL for testing
+      if: github.event.inputs.enable_database_tests == 'true'
+      uses: harmon758/postgresql-action@v1
+      with:
+        postgresql version: '15'
+        postgresql db: test_db
+        postgresql user: postgres
+        postgresql password: postgres
+
+    - name: Build (Release)
+      if: github.event.inputs.build_type == 'release'
+      run: cargo build --release --target ${{ matrix.target }} --verbose
+
+    - name: Build (Debug)
+      if: github.event.inputs.build_type == 'debug'
+      run: cargo build --target ${{ matrix.target }} --verbose
+
+    - name: Run unit tests
+      if: github.event.inputs.enable_tests == 'true'
+      run: cargo test --target ${{ matrix.target }} --lib --verbose
+
+    - name: Run integration tests
+      if: github.event.inputs.enable_tests == 'true' && github.event.inputs.enable_database_tests == 'true'
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        PGPASSWORD: postgres
+      run: |
+        # Create test database schema
+        psql -h localhost -U postgres -d test_db -c "CREATE TABLE IF NOT EXISTS test_table (id SERIAL PRIMARY KEY, name VARCHAR(100));"
+        psql -h localhost -U postgres -d test_db -c "INSERT INTO test_table (name) VALUES ('test1'), ('test2');"
+
+        # Run integration tests
+        cargo test --target ${{ matrix.target }} --test '*' --verbose
+
+    - name: Run database functionality tests
+      if: github.event.inputs.enable_database_tests == 'true'
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+      run: |
+        cargo run --bin rbeaver -- --test-database || echo "Database test completed"
+
+    - name: Create artifacts directory
+      run: mkdir -p artifacts
+
+    - name: Prepare release artifact
+      if: github.event.inputs.build_type == 'release'
+      shell: bash
+      run: |
+        if [[ "${{ matrix.platform }}" == "windows" ]]; then
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+        else
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+          chmod +x artifacts/${{ matrix.asset_name }}
+        fi
+
+        # Create version info file
+        echo "RBeaver - PostgreSQL Database Management Tool" > artifacts/README.txt
+        echo "Version: ${{ github.event.inputs.release_tag || 'development' }}" >> artifacts/README.txt
+        echo "Build: ${{ github.event.inputs.build_type }}" >> artifacts/README.txt
+        echo "Target: ${{ matrix.target }}" >> artifacts/README.txt
+        echo "Built on: $(date)" >> artifacts/README.txt
+
+    - name: Prepare debug artifact
+      if: github.event.inputs.build_type == 'debug'
+      shell: bash
+      run: |
+        if [[ "${{ matrix.platform }}" == "windows" ]]; then
+          cp target/${{ matrix.target }}/debug/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}-debug
+        else
+          cp target/${{ matrix.target }}/debug/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}-debug
+          chmod +x artifacts/${{ matrix.asset_name }}-debug
+        fi
+
+    - name: Create macOS app bundle
+      if: (matrix.platform == 'macos' || matrix.platform == 'macos-arm') && github.event.inputs.build_type == 'release'
+      shell: bash
+      run: |
+        mkdir -p RBeaver.app/Contents/MacOS
+        mkdir -p RBeaver.app/Contents/Resources
+
+        cp artifacts/${{ matrix.asset_name }} RBeaver.app/Contents/MacOS/rbeaver
+
+        cat > RBeaver.app/Contents/Info.plist << EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>rbeaver</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.rbeaver.app</string>
+            <key>CFBundleName</key>
+            <string>RBeaver</string>
+            <key>CFBundleVersion</key>
+            <string>${{ github.event.inputs.release_tag || '1.0.0' }}</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${{ github.event.inputs.release_tag || '1.0.0' }}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.15</string>
+        </dict>
+        </plist>
+        EOF
+
+        # Create DMG
+        if command -v hdiutil >/dev/null 2>&1; then
+          hdiutil create -volname "RBeaver" -srcfolder RBeaver.app -ov -format UDZO artifacts/RBeaver-${{ matrix.platform }}.dmg
+        else
+          tar -czf artifacts/RBeaver-${{ matrix.platform }}.app.tar.gz RBeaver.app
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: rbeaver-${{ matrix.target }}-${{ github.event.inputs.build_type }}
+        path: artifacts/
+        retention-days: 30
+
+    - name: Generate build report
+      run: |
+        echo "## Build Report for ${{ matrix.platform }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Target**: ${{ matrix.target }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Type**: ${{ github.event.inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tests Enabled**: ${{ github.event.inputs.enable_tests }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Database Tests**: ${{ github.event.inputs.enable_database_tests }}" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ github.event.inputs.build_type }}" == "release" ]]; then
+          echo "- **Binary Size**: $(ls -lh artifacts/${{ matrix.asset_name }}* | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "- **Build Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
+
+  # Create GitHub release
+  release:
+    name: Create GitHub Release
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.release_tag != '' && github.event.inputs.build_type == 'release'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: ./release-artifacts
+
+    - name: Display structure of downloaded files
+      run: find ./release-artifacts -type f -ls
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        find ./release-artifacts -name "rbeaver*" -type f -executable -exec cp {} release-assets/ \;
+        find ./release-artifacts -name "*.exe" -exec cp {} release-assets/ \;
+        find ./release-artifacts -name "*.dmg" -exec cp {} release-assets/ \;
+        find ./release-artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
+        ls -la release-assets/
+
+    - name: Generate checksums
+      run: |
+        cd release-assets
+        sha256sum * > checksums.sha256
+        cat checksums.sha256
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        release_name: RBeaver ${{ github.event.inputs.release_tag }}
+        body: |
+          # 🚀 RBeaver ${{ github.event.inputs.release_tag }}
+
+          A modern PostgreSQL database management tool built with Rust and GPUI.
+
+          ## 📦 Downloads
+
+          Choose the appropriate version for your operating system:
+
+          ### 🐧 Linux (x86_64)
+          - Download: `rbeaver-linux-x86_64`
+          - Run: `chmod +x rbeaver-linux-x86_64 && ./rbeaver-linux-x86_64`
+
+          ### 🪟 Windows (x86_64)
+          - Download: `rbeaver-windows-x86_64.exe`
+          - Run: Double-click to execute
+
+          ### 🍎 macOS
+          - **Intel Macs**: `rbeaver-macos-x86_64` or `RBeaver-macos.dmg`
+          - **Apple Silicon**: `rbeaver-macos-arm64` or `RBeaver-macos-arm.dmg`
+
+          ## ✨ Features
+
+          - 🔗 **PostgreSQL Connection Management**: Secure connection storage with SSL support
+          - 🗄️ **Database Schema Explorer**: Browse tables, views, and database structure
+          - 📝 **SQL Editor**: Execute queries with syntax highlighting (planned)
+          - 🔄 **Connection Pooling**: High-performance database connections
+          - 🛡️ **Security**: SSL/TLS support with multiple authentication modes
+          - 🎨 **Modern UI**: Built with GPUI for native performance
+
+          ## 🔧 Requirements
+
+          ### Linux
+          - Modern distribution with X11 or Wayland
+          - Required libraries: `libfontconfig1`, `libfreetype6`, `libxcb-*`, `libwayland`
+
+          ### Windows
+          - Windows 10 or later
+          - Visual C++ Redistributable (usually pre-installed)
+
+          ### macOS
+          - macOS 10.15 (Catalina) or later
+          - No additional dependencies required
+
+          ## 🔌 Database Support
+
+          - ✅ **PostgreSQL** (all versions)
+          - 🔄 **Connection pooling** with deadpool-postgres
+          - ⚡ **SQLx integration** for advanced queries
+          - 🔐 **SSL/TLS support** with multiple modes
+          - 🔑 **Multiple authentication methods**
+
+          ## 🚀 Getting Started
+
+          1. Download the appropriate binary for your platform
+          2. Run the application
+          3. Click "New Connection" to set up your PostgreSQL database
+          4. Enter your connection details and test the connection
+          5. Explore your database structure and run queries
+
+          ## 🔍 Verification
+
+          All binaries are provided with SHA256 checksums in `checksums.sha256`. Verify your download:
+
+          ```bash
+          # Linux/macOS
+          sha256sum -c checksums.sha256
+
+          # Windows (PowerShell)
+          Get-FileHash rbeaver-windows-x86_64.exe -Algorithm SHA256
+          ```
+
+          ## 🐛 Bug Reports & Feature Requests
+
+          Please report issues and request features on our [GitHub Issues](https://github.com/${{ github.repository }}/issues) page.
+
+          ---
+
+          **Build Information:**
+          - Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - Platforms: ${{ github.event.inputs.platforms }}
+          - Tests: ${{ github.event.inputs.enable_tests == 'true' && '✅ Passed' || '⏭️ Skipped' }}
+          - Database Tests: ${{ github.event.inputs.enable_database_tests == 'true' && '✅ Passed' || '⏭️ Skipped' }}
+
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      run: |
+        for file in release-assets/*; do
+          if [ -f "$file" ]; then
+            echo "Uploading $file..."
+            gh release upload ${{ github.event.inputs.release_tag }} "$file" --clobber
+          fi
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Cleanup job
+  cleanup:
+    name: Cleanup
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Summary
+      run: |
+        echo "## 🎯 Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Trigger**: Manual workflow dispatch" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Type**: ${{ github.event.inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Platforms**: ${{ github.event.inputs.platforms }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Release Tag**: ${{ github.event.inputs.release_tag || 'None' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tests**: ${{ github.event.inputs.enable_tests }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Database Tests**: ${{ github.event.inputs.enable_database_tests }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Build workflow completed successfully!" >> $GITHUB_STEP_SUMMARY

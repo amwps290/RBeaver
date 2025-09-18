@@ -1,0 +1,377 @@
+name: Build RBeaver (Windows & Linux)
+
+# 手动触发，不自动触发
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '发布标签 (可选)'
+        required: false
+        default: ''
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+        - release
+        - debug
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux 构建
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            artifact_name: rbeaver
+            asset_name: rbeaver-linux-x86_64
+          # Windows 构建
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            artifact_name: rbeaver.exe
+            asset_name: rbeaver-windows-x86_64.exe
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+
+    - name: 安装 Rust 工具链
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: 安装 Linux 依赖
+      if: matrix.platform == 'linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libfontconfig1-dev \
+          libfreetype6-dev \
+          libxcb-composite0-dev \
+          libxcb-damage0-dev \
+          libxcb-dpms0-dev \
+          libxcb-dri2-0-dev \
+          libxcb-dri3-dev \
+          libxcb-glx0-dev \
+          libxcb-present-dev \
+          libxcb-randr0-dev \
+          libxcb-record0-dev \
+          libxcb-render0-dev \
+          libxcb-res0-dev \
+          libxcb-screensaver0-dev \
+          libxcb-shape0-dev \
+          libxcb-shm0-dev \
+          libxcb-sync-dev \
+          libxcb-xf86dri0-dev \
+          libxcb-xfixes0-dev \
+          libxcb-xinput-dev \
+          libxcb-xkb-dev \
+          libxcb-xtest0-dev \
+          libxcb-xv0-dev \
+          libxcb-xvmc0-dev \
+          libxcb1-dev \
+          libxkbcommon-x11-dev \
+          libxkbcommon-dev \
+          libwayland-dev \
+          libssl-dev \
+          libpq-dev
+
+    - name: 缓存 Cargo 依赖
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ matrix.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ matrix.os }}-${{ matrix.target }}-cargo-
+          ${{ matrix.os }}-cargo-
+
+    - name: 执行 Release 构建
+      if: github.event.inputs.build_type == 'release'
+      run: cargo build --release --target ${{ matrix.target }} --verbose
+
+    - name: 执行 Debug 构建
+      if: github.event.inputs.build_type == 'debug'
+      run: cargo build --target ${{ matrix.target }} --verbose
+
+    - name: 运行测试
+      run: cargo test --target ${{ matrix.target }} --verbose
+
+    - name: 准备构建产物目录
+      run: mkdir -p artifacts
+
+    - name: 准备 Release 构建产物
+      if: github.event.inputs.build_type == 'release'
+      shell: bash
+      run: |
+        if [[ "${{ matrix.platform }}" == "windows" ]]; then
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+        else
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}
+          chmod +x artifacts/${{ matrix.asset_name }}
+        fi
+
+    - name: 准备 Debug 构建产物
+      if: github.event.inputs.build_type == 'debug'
+      shell: bash
+      run: |
+        if [[ "${{ matrix.platform }}" == "windows" ]]; then
+          cp target/${{ matrix.target }}/debug/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}-debug
+        else
+          cp target/${{ matrix.target }}/debug/${{ matrix.artifact_name }} artifacts/${{ matrix.asset_name }}-debug
+          chmod +x artifacts/${{ matrix.asset_name }}-debug
+        fi
+
+    - name: 创建版本信息文件
+      shell: bash
+      run: |
+        echo "RBeaver - PostgreSQL 数据库管理工具" > artifacts/README-${{ matrix.platform }}.txt
+        echo "版本: ${{ github.event.inputs.release_tag || '开发版本' }}" >> artifacts/README-${{ matrix.platform }}.txt
+        echo "构建类型: ${{ github.event.inputs.build_type }}" >> artifacts/README-${{ matrix.platform }}.txt
+        echo "目标平台: ${{ matrix.target }}" >> artifacts/README-${{ matrix.platform }}.txt
+        echo "构建时间: $(date)" >> artifacts/README-${{ matrix.platform }}.txt
+        echo "" >> artifacts/README-${{ matrix.platform }}.txt
+        echo "安装说明:" >> artifacts/README-${{ matrix.platform }}.txt
+        if [[ "${{ matrix.platform }}" == "linux" ]]; then
+          echo "1. 下载 ${{ matrix.asset_name }}" >> artifacts/README-${{ matrix.platform }}.txt
+          echo "2. 设置执行权限: chmod +x ${{ matrix.asset_name }}" >> artifacts/README-${{ matrix.platform }}.txt
+          echo "3. 运行: ./${{ matrix.asset_name }}" >> artifacts/README-${{ matrix.platform }}.txt
+        else
+          echo "1. 下载 ${{ matrix.asset_name }}" >> artifacts/README-${{ matrix.platform }}.txt
+          echo "2. 双击运行程序" >> artifacts/README-${{ matrix.platform }}.txt
+        fi
+
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v3
+      with:
+        name: rbeaver-${{ matrix.platform }}-${{ github.event.inputs.build_type }}
+        path: artifacts/
+        retention-days: 7
+
+  # 如果提供了发布标签且是 release 构建，则创建 GitHub Release
+  release:
+    name: 创建 GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event.inputs.release_tag != '' && github.event.inputs.build_type == 'release'
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+
+    - name: 下载所有构建产物
+      uses: actions/download-artifact@v3
+      with:
+        path: ./release-artifacts
+
+    - name: 显示下载的文件结构
+      run: |
+        echo "构建产物结构:"
+        find ./release-artifacts -type f -ls
+
+    - name: 准备发布资源
+      run: |
+        mkdir -p release-assets
+
+        # 复制 Linux 构建产物
+        if [ -f "./release-artifacts/rbeaver-linux-release/rbeaver-linux-x86_64" ]; then
+          cp "./release-artifacts/rbeaver-linux-release/rbeaver-linux-x86_64" release-assets/
+          cp "./release-artifacts/rbeaver-linux-release/README-linux.txt" release-assets/
+        fi
+
+        # 复制 Windows 构建产物
+        if [ -f "./release-artifacts/rbeaver-windows-release/rbeaver-windows-x86_64.exe" ]; then
+          cp "./release-artifacts/rbeaver-windows-release/rbeaver-windows-x86_64.exe" release-assets/
+          cp "./release-artifacts/rbeaver-windows-release/README-windows.txt" release-assets/
+        fi
+
+        ls -la release-assets/
+
+    - name: 生成校验和
+      run: |
+        cd release-assets
+        sha256sum rbeaver-* > checksums.sha256
+        echo "SHA256 校验和:"
+        cat checksums.sha256
+
+    - name: 创建 GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        release_name: RBeaver ${{ github.event.inputs.release_tag }}
+        body: |
+          # RBeaver ${{ github.event.inputs.release_tag }} 发布
+
+          RBeaver 是一个现代化的 PostgreSQL 数据库管理工具，使用 Rust 和 GPUI 构建。
+
+          ## 下载
+
+          ### Windows (x86_64)
+          - 文件: `rbeaver-windows-x86_64.exe`
+          - 系统要求: Windows 10 或更高版本
+          - 安装: 直接下载并双击运行
+
+          ### Linux (x86_64)
+          - 文件: `rbeaver-linux-x86_64`
+          - 系统要求: 支持 X11 或 Wayland 的现代 Linux 发行版
+          - 安装:
+            ```bash
+            chmod +x rbeaver-linux-x86_64
+            ./rbeaver-linux-x86_64
+            ```
+
+          ## 功能特性
+
+          - 🔗 PostgreSQL 连接管理
+          - 🗄️ 数据库架构浏览
+          - 📝 SQL 查询编辑器（计划中）
+          - 🔄 连接池支持
+          - 🛡️ SSL/TLS 安全连接
+          - 🎨 现代化用户界面
+
+          ## 数据库支持
+
+          - ✅ PostgreSQL (所有版本)
+          - 🔄 使用 deadpool-postgres 进行连接池管理
+          - ⚡ SQLx 集成支持高级查询
+          - 🔐 支持多种 SSL 模式
+
+          ## 系统要求
+
+          ### Linux
+          - 现代 Linux 发行版 (Ubuntu 18.04+, CentOS 8+, 等)
+          - X11 或 Wayland 桌面环境
+          - 系统库: fontconfig, freetype, xcb, wayland
+
+          ### Windows
+          - Windows 10 或 Windows 11
+          - Visual C++ 可再发行组件包 (通常已预安装)
+
+          ## 验证下载
+
+          所有二进制文件都提供 SHA256 校验和，请验证下载文件的完整性：
+
+          ```bash
+          # Linux/macOS
+          sha256sum -c checksums.sha256
+
+          # Windows (PowerShell)
+          Get-FileHash rbeaver-windows-x86_64.exe -Algorithm SHA256
+          ```
+
+          ## 快速开始
+
+          1. 下载适合您平台的二进制文件
+          2. 运行应用程序
+          3. 点击 "新建连接" 设置 PostgreSQL 数据库连接
+          4. 输入连接详情并测试连接
+          5. 开始探索您的数据库结构
+
+          ## 问题反馈
+
+          如有问题或功能建议，请在 [GitHub Issues](https://github.com/${{ github.repository }}/issues) 页面提交。
+
+          ---
+          **构建信息:**
+          - 构建时间: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - 构建类型: Release
+          - 支持平台: Windows x86_64, Linux x86_64
+
+        draft: false
+        prerelease: false
+
+    - name: 上传 Linux 发布资源
+      if: hashFiles('release-assets/rbeaver-linux-x86_64') != ''
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/rbeaver-linux-x86_64
+        asset_name: rbeaver-linux-x86_64
+        asset_content_type: application/octet-stream
+
+    - name: 上传 Windows 发布资源
+      if: hashFiles('release-assets/rbeaver-windows-x86_64.exe') != ''
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/rbeaver-windows-x86_64.exe
+        asset_name: rbeaver-windows-x86_64.exe
+        asset_content_type: application/octet-stream
+
+    - name: 上传校验和文件
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/checksums.sha256
+        asset_name: checksums.sha256
+        asset_content_type: text/plain
+
+    - name: 上传 README 文件
+      if: hashFiles('release-assets/README-*.txt') != ''
+      run: |
+        for readme in release-assets/README-*.txt; do
+          if [ -f "$readme" ]; then
+            filename=$(basename "$readme")
+            gh release upload ${{ github.event.inputs.release_tag }} "$readme" --clobber
+          fi
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  summary:
+    name: 构建总结
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: 生成构建总结
+      run: |
+        echo "## 🎯 RBeaver 构建总结" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 构建配置" >> $GITHUB_STEP_SUMMARY
+        echo "- **触发方式**: 手动触发" >> $GITHUB_STEP_SUMMARY
+        echo "- **构建类型**: ${{ github.event.inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **发布标签**: ${{ github.event.inputs.release_tag || '无' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **构建平台**: Windows x86_64, Linux x86_64" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 构建状态" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ needs.build.result }}" == "success" ]]; then
+          echo "- **构建结果**: ✅ 成功" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **构建结果**: ❌ 失败" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 下载构建产物" >> $GITHUB_STEP_SUMMARY
+        echo "构建产物已上传到 GitHub Actions artifacts，可在 Actions 页面下载。" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ github.event.inputs.release_tag }}" != "" && "${{ github.event.inputs.build_type }}" == "release" ]]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### GitHub Release" >> $GITHUB_STEP_SUMMARY
+          echo "📦 已创建 GitHub Release: [${{ github.event.inputs.release_tag }}](https://github.com/${{ github.repository }}/releases/tag/${{ github.event.inputs.release_tag }})" >> $GITHUB_STEP_SUMMARY
+        fi

@@ -5,8 +5,10 @@ use gpui::{
 use gpui_component::{
     IconName, StyledExt,
     button::{Button, ButtonVariants},
+    input::*,
     label::Label,
 };
+use sqlx::types::Text;
 
 use crate::database::{ConnectionTestResult, DatabaseConnection};
 
@@ -25,6 +27,14 @@ pub struct ConnectionDialog {
     username_value: String,
     password_value: String,
     timeout_value: String,
+
+    connection_name: Entity<InputState>,
+    connection_host: Entity<InputState>,
+    connection_port: Entity<InputState>,
+    connection_database: Entity<InputState>,
+    connection_username: Entity<InputState>,
+    connection_password: Entity<InputState>,
+    connection_timeout: Entity<InputState>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,8 +46,30 @@ pub enum ConnectionDialogEvent {
 impl EventEmitter<ConnectionDialogEvent> for ConnectionDialog {}
 
 impl ConnectionDialog {
-    pub fn new(connection: Option<DatabaseConnection>, cx: &mut App) -> Entity<Self> {
+    pub fn new(
+        connection: Option<DatabaseConnection>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         let connection = connection.unwrap_or_default();
+        let connection_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder(connection.name.clone()));
+        let connection_host =
+            cx.new(|cx| InputState::new(window, cx).placeholder(connection.host.clone()));
+        let connection_port =
+            cx.new(|cx| InputState::new(window, cx).placeholder(connection.port.to_string()));
+        let connection_database =
+            cx.new(|cx| InputState::new(window, cx).placeholder(connection.database.clone()));
+        let connection_username =
+            cx.new(|cx| InputState::new(window, cx).placeholder(connection.username.clone()));
+        let connection_password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(connection.password.clone())
+        });
+        let connection_timeout = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(connection.connection_timeout.to_string())
+        });
 
         cx.new(|cx| Self {
             name_value: connection.name.clone(),
@@ -52,6 +84,13 @@ impl ConnectionDialog {
             is_testing: false,
             test_result: None,
             validation_errors: Vec::new(),
+            connection_name,
+            connection_host,
+            connection_port,
+            connection_database,
+            connection_username,
+            connection_password,
+            connection_timeout,
         })
     }
 
@@ -107,44 +146,15 @@ impl ConnectionDialog {
     fn handle_cancel(&mut self, cx: &mut Context<Self>) {
         cx.emit(ConnectionDialogEvent::Cancel);
     }
-
-    fn render_input(
-        &self,
-        label: &'static str,
-        value: &str,
-        placeholder: &'static str,
-    ) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                Label::new(label)
-                    .text_sm()
-                    .font_medium()
-                    .text_color(rgb(0x374151)),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .border_1()
-                    .border_color(rgb(0xd1d5db))
-                    .rounded_md()
-                    .bg(rgb(0xffffff))
-                    .child(if value.is_empty() {
-                        div().text_color(rgb(0x9ca3af)).child(placeholder)
-                    } else {
-                        div().child(value.to_string())
-                    }),
-            )
-    }
 }
 
 impl Render for ConnectionDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .border_1()
+            .border_color(rgb(0xd1d5db))
+            .rounded_lg()
+            .shadow_lg()
             .flex()
             .flex_col()
             .w_full()
@@ -181,41 +191,113 @@ impl Render for ConnectionDialog {
                     .flex_col()
                     .gap_4()
                     .overflow_hidden()
-                    .child(self.render_input("Connection Name", &self.name_value, "My PostgreSQL"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                Label::new("Connection Name")
+                                    .text_sm()
+                                    .font_medium()
+                                    .text_color(rgb(0x374151)),
+                            )
+                            .child(TextInput::new(&self.connection_name)),
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .gap_4()
-                            .child(div().flex_1().child(self.render_input(
-                                "Host",
-                                &self.host_value,
-                                "localhost",
-                            )))
-                            .child(div().w(px(120.0)).child(self.render_input(
-                                "Port",
-                                &self.port_value,
-                                "5432",
-                            ))),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        Label::new("Host")
+                                            .text_sm()
+                                            .font_medium()
+                                            .text_color(rgb(0x374151)),
+                                    )
+                                    .child(TextInput::new(&self.connection_host)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(120.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        Label::new("Port")
+                                            .text_sm()
+                                            .font_medium()
+                                            .text_color(rgb(0x374151)),
+                                    )
+                                    .child(TextInput::new(&self.connection_port)),
+                            ),
                     )
-                    .child(self.render_input("Database", &self.database_value, "postgres"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                Label::new("Database")
+                                    .text_sm()
+                                    .font_medium()
+                                    .text_color(rgb(0x374151)),
+                            )
+                            .child(TextInput::new(&self.connection_database)),
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .gap_4()
-                            .child(div().flex_1().child(self.render_input(
-                                "Username",
-                                &self.username_value,
-                                "postgres",
-                            )))
-                            .child(div().flex_1().child(self.render_input(
-                                "Password",
-                                &self.password_value,
-                                "Password",
-                            ))),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        Label::new("Username")
+                                            .text_sm()
+                                            .font_medium()
+                                            .text_color(rgb(0x374151)),
+                                    )
+                                    .child(TextInput::new(&self.connection_username)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        Label::new("Password")
+                                            .text_sm()
+                                            .font_medium()
+                                            .text_color(rgb(0x374151)),
+                                    )
+                                    .child(TextInput::new(&self.connection_password)),
+                            ),
                     )
-                    .child(self.render_input("Timeout (seconds)", &self.timeout_value, "30"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                Label::new("Connection Timeout (seconds)")
+                                    .text_sm()
+                                    .font_medium()
+                                    .text_color(rgb(0x374151)),
+                            )
+                            .child(TextInput::new(&self.connection_timeout)),
+                    )
                     // Test Result
                     .when_some(self.test_result.as_ref(), |this, result| match result {
                         ConnectionTestResult::Success => this.child(

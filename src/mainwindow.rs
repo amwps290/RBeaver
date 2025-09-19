@@ -12,15 +12,15 @@ pub struct MainWindow {
     statusbar: Entity<StatusBar>,
     database_navigator: Entity<DatabaseNavigator>,
     connection_dialog: Option<Entity<ConnectionDialog>>,
+    pending_connection_dialog: Option<DatabaseConnection>,
 }
 
 impl MainWindow {
-    pub fn new(title: SharedString, cx: &mut App) -> Self {
+    pub fn new(title: SharedString, _window: &mut Window, cx: &mut App) -> Self {
         let top_menubar = cx.new(|_| MenuBar {});
         let toolbar = cx.new(|_| ToolBar::new());
         let statusbar = cx.new(|_| StatusBar::new().with_connection_status("Connected"));
         let database_navigator = DatabaseNavigator::new(cx);
-
         Self {
             title,
             top_menubar,
@@ -28,6 +28,7 @@ impl MainWindow {
             statusbar,
             database_navigator,
             connection_dialog: None,
+            pending_connection_dialog: None,
         }
     }
 }
@@ -41,7 +42,8 @@ impl MainWindow {
     ) {
         match event {
             DatabaseNavigatorEvent::NewConnectionRequested => {
-                self.show_connection_dialog(None, cx);
+                self.pending_connection_dialog = Some(DatabaseConnection::default());
+                cx.notify();
             }
             _ => {}
         }
@@ -50,9 +52,10 @@ impl MainWindow {
     fn show_connection_dialog(
         &mut self,
         connection: Option<DatabaseConnection>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dialog = ConnectionDialog::new(connection, cx);
+        let dialog = ConnectionDialog::new(connection, window, cx);
 
         cx.subscribe(&dialog, |this, _dialog, event, cx| match event {
             ConnectionDialogEvent::Save(connection) => {
@@ -75,7 +78,12 @@ impl MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 检查是否需要创建连接对话框
+        if let Some(connection) = self.pending_connection_dialog.take() {
+            self.show_connection_dialog(Some(connection), window, cx);
+        }
+
         // Subscribe to navigator events
         cx.subscribe(&self.database_navigator, |this, entity, event, cx| {
             this.handle_navigator_event(entity, event, cx);
@@ -117,27 +125,7 @@ impl Render for MainWindow {
                             .flex_shrink_0()
                             .border_r_1()
                             .border_color(rgb(0xced4da))
-                            .child(self.database_navigator.clone())
-                            .when_some(self.connection_dialog.clone(), |this, dialog| {
-                                this.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .bg(rgba(0x000000aa))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            div()
-                                                .bg(rgb(0xffffff))
-                                                .rounded_lg()
-                                                .shadow_lg()
-                                                .w(px(600.0))
-                                                .max_h(px(700.0))
-                                                .child(dialog),
-                                        ),
-                                )
-                            }),
+                            .child(self.database_navigator.clone()),
                     )
                     .child(
                         // 主工作区
@@ -235,5 +223,26 @@ impl Render for MainWindow {
                     ),
             )
             .child(self.statusbar.clone())
+            // Global connection dialog overlay
+            .when_some(self.connection_dialog.clone(), |this, dialog| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000aa))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .bg(rgb(0xffffff))
+                                .rounded_lg()
+                                .shadow_lg()
+                                .w(px(600.0))
+                                .max_h(px(700.0))
+                                .child(dialog),
+                        ),
+                )
+            })
     }
 }

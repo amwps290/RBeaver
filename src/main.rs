@@ -35,7 +35,7 @@ fn main() {
         };
 
         cx.open_window(options, |window, cx| {
-            let view = cx.new(|cx| MainWindow::new("RBeaver".into(), cx));
+            let view = cx.new(|cx| MainWindow::new("RBeaver".into(), window, cx));
             cx.new(|cx| Root::new(view.into(), window, cx))
         })
         .unwrap();

@@ -19,15 +19,6 @@ pub struct ConnectionDialog {
     test_result: Option<ConnectionTestResult>,
     validation_errors: Vec<String>,
 
-    // Form values
-    name_value: String,
-    host_value: String,
-    port_value: String,
-    database_value: String,
-    username_value: String,
-    password_value: String,
-    timeout_value: String,
-
     connection_name: Entity<InputState>,
     connection_host: Entity<InputState>,
     connection_port: Entity<InputState>,
@@ -72,13 +63,6 @@ impl ConnectionDialog {
         });
 
         cx.new(|cx| Self {
-            name_value: connection.name.clone(),
-            host_value: connection.host.clone(),
-            port_value: connection.port.to_string(),
-            database_value: connection.database.clone(),
-            username_value: connection.username.clone(),
-            password_value: connection.password.clone(),
-            timeout_value: connection.connection_timeout.to_string(),
             connection,
             focus_handle: cx.focus_handle(),
             is_testing: false,
@@ -94,24 +78,29 @@ impl ConnectionDialog {
         })
     }
 
-    fn collect_form_data(&mut self) -> Result<DatabaseConnection, Vec<String>> {
+    fn collect_form_data(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<DatabaseConnection, Vec<String>> {
         let mut connection = self.connection.clone();
         let mut errors = Vec::new();
 
-        connection.name = self.name_value.clone();
-        connection.host = self.host_value.clone();
-        connection.database = self.database_value.clone();
-        connection.username = self.username_value.clone();
-        connection.password = self.password_value.clone();
+        connection.name = self.connection_name.read(cx).value().into();
+        connection.host = self.connection_host.read(cx).value().into();
+        let port: String = self.connection_port.read(cx).value().into();
+        connection.database = self.connection_database.read(cx).value().into();
+        connection.username = self.connection_username.read(cx).value().into();
+        connection.password = self.connection_password.read(cx).value().into();
+        let timeout: String = self.connection_timeout.read(cx).value().into();
 
         // Parse port
-        match self.port_value.parse::<u16>() {
+        match port.parse::<u16>() {
             Ok(port) => connection.port = port,
             Err(_) => errors.push("Invalid port number".to_string()),
         }
 
         // Parse timeout
-        match self.timeout_value.parse::<u32>() {
+        match timeout.parse::<u32>() {
             Ok(timeout) => connection.connection_timeout = timeout,
             Err(_) => errors.push("Invalid timeout value".to_string()),
         }
@@ -129,7 +118,7 @@ impl ConnectionDialog {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
-        match self.collect_form_data() {
+        match self.collect_form_data(cx) {
             Ok(connection) => {
                 self.validation_errors.clear();
                 cx.emit(ConnectionDialogEvent::Save(connection));
@@ -141,7 +130,42 @@ impl ConnectionDialog {
         }
     }
 
-    fn handle_test_connection(&mut self, cx: &mut Context<Self>) {}
+    fn handle_test_connection(&mut self, cx: &mut Context<Self>) {
+        // 如果正在测试中，则不执行新的测试
+        if self.is_testing {
+            return;
+        }
+
+        // 首先收集表单数据并验证
+        match self.collect_form_data(cx) {
+            Ok(connection) => {
+                // 设置测试状态
+                self.is_testing = true;
+                self.test_result = None;
+                self.validation_errors.clear();
+                cx.notify();
+
+                // 为了简化，我们暂时使用同步方式进行测试
+                // 在实际应用中，应该使用异步方式避免阻塞UI
+                let result = {
+                    // 创建 tokio runtime 并执行测试
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async { connection.test_connection().await })
+                };
+
+                // 更新测试结果
+                self.is_testing = false;
+                self.test_result = Some(result);
+                cx.notify();
+            }
+            Err(errors) => {
+                // 如果表单数据无效，显示验证错误
+                self.validation_errors = errors;
+                self.test_result = None;
+                cx.notify();
+            }
+        }
+    }
 
     fn handle_cancel(&mut self, cx: &mut Context<Self>) {
         cx.emit(ConnectionDialogEvent::Cancel);

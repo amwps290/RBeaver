@@ -1,9 +1,9 @@
 use gpui::{
-    App, Context, Entity, SharedString, Subscription, Window, div, prelude::*, px, rgb, rgba,
+    App, Context, Entity, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Subscription,
+    Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_component::{self, StyledExt, TitleBar};
 
-use crate::actions::ToggleDatabaseNavigator;
 use crate::connection_dialog::ConnectionDialogEvent;
 use crate::database_navigator::DatabaseNavigatorEvent;
 use crate::statusbar::StatusBarEvent;
@@ -18,6 +18,10 @@ pub struct MainWindow {
     connection_dialog: Option<Entity<ConnectionDialog>>,
     pending_connection_dialog: Option<DatabaseConnection>,
     database_navigator_visible: bool,
+    database_navigator_width: f32,
+    is_resizing_navigator: bool,
+    resize_start_x: f32,
+    resize_start_width: f32,
     _navigator_subscription: Option<Subscription>,
     _statusbar_subscription: Option<Subscription>,
 }
@@ -38,6 +42,10 @@ impl MainWindow {
             connection_dialog: None,
             pending_connection_dialog: None,
             database_navigator_visible: true,
+            database_navigator_width: 280.0,
+            is_resizing_navigator: false,
+            resize_start_x: 0.0,
+            resize_start_width: 0.0,
             _navigator_subscription: None,
             _statusbar_subscription: None,
         }
@@ -55,6 +63,36 @@ impl MainWindow {
 
     pub fn is_database_navigator_visible(&self) -> bool {
         self.database_navigator_visible
+    }
+
+    pub fn set_database_navigator_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.database_navigator_width = width.max(200.0).min(500.0); // 限制宽度范围
+        cx.notify();
+    }
+
+    pub fn get_database_navigator_width(&self) -> f32 {
+        self.database_navigator_width
+    }
+
+    fn start_resize(&mut self, mouse_x: f32, cx: &mut Context<Self>) {
+        self.is_resizing_navigator = true;
+        self.resize_start_x = mouse_x;
+        self.resize_start_width = self.database_navigator_width;
+        cx.notify();
+    }
+
+    fn update_resize(&mut self, mouse_x: f32, cx: &mut Context<Self>) {
+        if self.is_resizing_navigator {
+            let delta = mouse_x - self.resize_start_x;
+            let new_width = (self.resize_start_width + delta).max(200.0).min(600.0);
+            self.database_navigator_width = new_width;
+            cx.notify();
+        }
+    }
+
+    fn stop_resize(&mut self, cx: &mut Context<Self>) {
+        self.is_resizing_navigator = false;
+        cx.notify();
     }
 }
 
@@ -132,6 +170,19 @@ impl Render for MainWindow {
         }
 
         div()
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _view, cx| {
+                if this.is_resizing_navigator {
+                    this.update_resize(event.position.x.0, cx);
+                }
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _view, cx| {
+                    if this.is_resizing_navigator {
+                        this.stop_resize(cx);
+                    }
+                }),
+            )
             .flex()
             .flex_col()
             .size_full()
@@ -162,19 +213,62 @@ impl Render for MainWindow {
                     .min_h_0()
                     .when(self.database_navigator_visible, |this| {
                         this.child(
-                            // 左侧数据库导航栏
+                            // 左侧数据库导航栏容器
                             div()
-                                .w(px(280.0))
-                                .flex_shrink_0()
-                                .border_r_1()
-                                .border_color(rgb(0xced4da))
-                                .child(self.database_navigator.clone()),
+                                .flex()
+                                .child(
+                                    // 数据库导航栏
+                                    div()
+                                        .w(px(self.database_navigator_width))
+                                        .flex_shrink_0()
+                                        .border_r_1()
+                                        .border_color(rgb(0xced4da))
+                                        .child(self.database_navigator.clone()),
+                                )
+                                .child(
+                                    // 可拖拽的分隔条
+                                    div()
+                                        .w(px(2.0))
+                                        .h_full()
+                                        .bg(if self.is_resizing_navigator {
+                                            rgb(0x0066cc)
+                                        } else {
+                                            rgb(0xced4da)
+                                        })
+                                        .hover(|style| style.bg(rgb(0x0066cc)).cursor_col_resize())
+                                        .cursor_col_resize()
+                                        .flex_shrink_0()
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(
+                                                |this, event: &MouseDownEvent, _view, cx| {
+                                                    this.start_resize(event.position.x.0, cx);
+                                                },
+                                            ),
+                                        )
+                                        .on_mouse_move(cx.listener(
+                                            |this, event: &MouseMoveEvent, _view, cx| {
+                                                if this.is_resizing_navigator {
+                                                    this.update_resize(event.position.x.0, cx);
+                                                }
+                                            },
+                                        ))
+                                        .on_mouse_up(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(
+                                                |this, _event: &MouseUpEvent, _view, cx| {
+                                                    this.stop_resize(cx);
+                                                },
+                                            ),
+                                        ),
+                                ),
                         )
                     })
                     .child(
                         // 主工作区
                         div()
                             .flex_1()
+                            .min_w_0()
                             .bg(rgb(0xffffff))
                             .flex()
                             .flex_col()

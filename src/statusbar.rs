@@ -1,30 +1,32 @@
-use gpui::{ParentElement, Render, Styled, div, prelude::FluentBuilder, px};
+use gpui::{EventEmitter, ParentElement, Render, Styled, div, prelude::FluentBuilder, px};
 use gpui_component::{
     IconName,
     button::{Button, ButtonVariants},
     label::Label,
 };
 
+#[derive(Clone, Debug)]
+pub enum StatusBarEvent {
+    ToggleDatabaseNavigator,
+}
+
 pub struct StatusBar {
-    connection_status: String,
     query_status: String,
     row_count: Option<u64>,
     execution_time: Option<String>,
+    database_navigator_visible: bool,
 }
+
+impl EventEmitter<StatusBarEvent> for StatusBar {}
 
 impl StatusBar {
     pub fn new() -> Self {
         Self {
-            connection_status: "Disconnected".to_string(),
             query_status: "Ready".to_string(),
             row_count: None,
             execution_time: None,
+            database_navigator_visible: true,
         }
-    }
-
-    pub fn with_connection_status(mut self, status: impl Into<String>) -> Self {
-        self.connection_status = status.into();
-        self
     }
 
     pub fn with_query_status(mut self, status: impl Into<String>) -> Self {
@@ -41,13 +43,22 @@ impl StatusBar {
         self.execution_time = Some(time.into());
         self
     }
+
+    pub fn with_database_navigator_visible(mut self, visible: bool) -> Self {
+        self.database_navigator_visible = visible;
+        self
+    }
+
+    pub fn set_database_navigator_visible(&mut self, visible: bool) {
+        self.database_navigator_visible = visible;
+    }
 }
 
 impl Render for StatusBar {
     fn render(
         &mut self,
         _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<Self>,
+        cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         div()
             .flex()
@@ -67,22 +78,28 @@ impl Render for StatusBar {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
-                    // 连接状态
+                    .gap_1()
+                    // 数据库导航栏切换按钮
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(
-                                if self.connection_status == "Connected" {
-                                    gpui::rgb(0x28a745) // 绿色
-                                } else {
-                                    gpui::rgb(0xdc3545) // 红色
-                                },
-                            ))
-                            .child(Label::new(self.connection_status.clone()).text_size(px(11.0))),
+                        Button::new("toggle_database_navigator")
+                            .border_10()
+                            .w(px(24.0))
+                            .h(px(20.0))
+                            .icon(if self.database_navigator_visible {
+                                IconName::PanelLeftClose
+                            } else {
+                                IconName::PanelLeftOpen
+                            })
+                            .link()
+                            .tooltip(if self.database_navigator_visible {
+                                "Hide Database Navigator"
+                            } else {
+                                "Show Database Navigator"
+                            })
+                            .on_click(cx.listener(|_this, _event, _view, cx| {
+                                println!("Emit ToggleDatabaseNavigator");
+                                cx.emit(StatusBarEvent::ToggleDatabaseNavigator);
+                            })),
                     )
                     // 分隔符
                     .child(div().w(px(1.0)).h(px(16.0)).bg(gpui::rgb(0xced4da)))

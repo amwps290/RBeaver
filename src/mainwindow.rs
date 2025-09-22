@@ -1,8 +1,12 @@
-use gpui::{App, Context, Entity, SharedString, Window, div, prelude::*, px, rgb, rgba};
+use gpui::{
+    App, Context, Entity, SharedString, Subscription, Window, div, prelude::*, px, rgb, rgba,
+};
 use gpui_component::{self, StyledExt, TitleBar};
 
+use crate::actions::ToggleDatabaseNavigator;
 use crate::connection_dialog::ConnectionDialogEvent;
 use crate::database_navigator::DatabaseNavigatorEvent;
+use crate::statusbar::StatusBarEvent;
 use crate::{ConnectionDialog, DatabaseConnection, DatabaseNavigator, MenuBar, StatusBar, ToolBar};
 
 pub struct MainWindow {
@@ -13,14 +17,18 @@ pub struct MainWindow {
     database_navigator: Entity<DatabaseNavigator>,
     connection_dialog: Option<Entity<ConnectionDialog>>,
     pending_connection_dialog: Option<DatabaseConnection>,
+    database_navigator_visible: bool,
+    _navigator_subscription: Option<Subscription>,
+    _statusbar_subscription: Option<Subscription>,
 }
 
 impl MainWindow {
     pub fn new(title: SharedString, _window: &mut Window, cx: &mut App) -> Self {
         let top_menubar = cx.new(|_| MenuBar {});
         let toolbar = cx.new(|_| ToolBar::new());
-        let statusbar = cx.new(|_| StatusBar::new().with_connection_status("Connected"));
+        let statusbar = cx.new(|_| StatusBar::new().with_database_navigator_visible(true));
         let database_navigator = DatabaseNavigator::new(cx);
+
         Self {
             title,
             top_menubar,
@@ -29,7 +37,24 @@ impl MainWindow {
             database_navigator,
             connection_dialog: None,
             pending_connection_dialog: None,
+            database_navigator_visible: true,
+            _navigator_subscription: None,
+            _statusbar_subscription: None,
         }
+    }
+
+    pub fn toggle_database_navigator(&mut self, cx: &mut Context<Self>) {
+        self.database_navigator_visible = !self.database_navigator_visible;
+        // 更新状态栏的显示状态
+        self.statusbar.update(cx, |statusbar, cx| {
+            statusbar.set_database_navigator_visible(self.database_navigator_visible);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    pub fn is_database_navigator_visible(&self) -> bool {
+        self.database_navigator_visible
     }
 }
 
@@ -46,6 +71,20 @@ impl MainWindow {
                 cx.notify();
             }
             _ => {}
+        }
+    }
+
+    fn handle_statusbar_event(
+        &mut self,
+        _entity: Entity<StatusBar>,
+        event: &StatusBarEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            StatusBarEvent::ToggleDatabaseNavigator => {
+                println!("Receive ToggleDatabaseNavigator");
+                self.toggle_database_navigator(cx);
+            }
         }
     }
 
@@ -84,11 +123,14 @@ impl Render for MainWindow {
             self.show_connection_dialog(Some(connection), window, cx);
         }
 
-        // Subscribe to navigator events
-        cx.subscribe(&self.database_navigator, |this, entity, event, cx| {
-            this.handle_navigator_event(entity, event, cx);
-        })
-        .detach();
+        // Subscribe to events only once
+        if self._navigator_subscription.is_none() {
+            self._navigator_subscription =
+                Some(cx.subscribe(&self.database_navigator, Self::handle_navigator_event));
+            self._statusbar_subscription =
+                Some(cx.subscribe(&self.statusbar, Self::handle_statusbar_event));
+        }
+
         div()
             .flex()
             .flex_col()
@@ -118,15 +160,17 @@ impl Render for MainWindow {
                     .flex_row()
                     .bg(rgb(0xf8f9fa))
                     .min_h_0()
-                    .child(
-                        // 左侧数据库导航栏
-                        div()
-                            .w(px(280.0))
-                            .flex_shrink_0()
-                            .border_r_1()
-                            .border_color(rgb(0xced4da))
-                            .child(self.database_navigator.clone()),
-                    )
+                    .when(self.database_navigator_visible, |this| {
+                        this.child(
+                            // 左侧数据库导航栏
+                            div()
+                                .w(px(280.0))
+                                .flex_shrink_0()
+                                .border_r_1()
+                                .border_color(rgb(0xced4da))
+                                .child(self.database_navigator.clone()),
+                        )
+                    })
                     .child(
                         // 主工作区
                         div()

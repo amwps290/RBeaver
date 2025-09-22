@@ -7,6 +7,11 @@ use std::fs;
 use std::path::PathBuf;
 use tokio_postgres::{Client, NoTls};
 
+use crate::database_structure::{
+    DatabaseObject, DatabaseObjectType, DatabaseStructureQuery, DatabaseTreeNode, DbExtensionInfo,
+    DbFunctionInfo, DbIndexInfo, DbTableInfo as StructTableInfo, DbTypeInfo,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConnection {
     pub id: String,
@@ -310,13 +315,15 @@ pub struct DatabaseInfo {
 pub struct DatabaseManager {
     pub connection_manager: ConnectionManager,
     pub active_pools: HashMap<String, PgPool>,
+    pub database_structures: HashMap<String, DatabaseTreeNode>,
 }
 
 impl Default for DatabaseManager {
     fn default() -> Self {
         Self {
-            connection_manager: ConnectionManager::default(),
+            connection_manager: ConnectionManager::new(),
             active_pools: HashMap::new(),
+            database_structures: HashMap::new(),
         }
     }
 }
@@ -330,6 +337,10 @@ impl DatabaseManager {
         if let Some(conn) = self.connection_manager.get_connection(connection_id) {
             let pool = conn.create_sqlx_pool().await?;
             self.active_pools.insert(connection_id.to_string(), pool);
+
+            // Load database structure after successful connection
+            let _ = self.load_database_structure(connection_id).await;
+
             Ok(())
         } else {
             Err(anyhow::anyhow!("Connection not found: {}", connection_id))
@@ -340,6 +351,8 @@ impl DatabaseManager {
         if let Some(pool) = self.active_pools.remove(connection_id) {
             pool.close().await;
         }
+        // Remove cached database structure
+        self.database_structures.remove(connection_id);
     }
 
     pub fn get_pool(&self, connection_id: &str) -> Option<&PgPool> {
@@ -461,6 +474,162 @@ impl DatabaseManager {
                 connection_id
             ))
         }
+    }
+
+    /// 加载数据库结构
+    pub async fn load_database_structure(&mut self, connection_id: &str) -> Result<()> {
+        if let Some(pool) = self.get_pool(connection_id) {
+            let mut root = DatabaseTreeNode::new(
+                connection_id.to_string(),
+                format!("Database ({})", connection_id),
+                DatabaseObjectType::Schema,
+            );
+
+            // 获取schemas
+            let schemas = DatabaseStructureQuery::get_schemas(pool).await?;
+
+            for schema in schemas {
+                let mut schema_node = DatabaseTreeNode::new(
+                    format!("{}:schema:{}", connection_id, schema.name),
+                    schema.name.clone(),
+                    DatabaseObjectType::Schema,
+                );
+
+                // 为每个schema添加对象类型节点
+                let object_types = vec![
+                    DatabaseObjectType::Extension,
+                    DatabaseObjectType::Table,
+                    DatabaseObjectType::View,
+                    DatabaseObjectType::Index,
+                    DatabaseObjectType::Type,
+                    DatabaseObjectType::Function,
+                ];
+
+                for obj_type in object_types {
+                    let type_node = DatabaseTreeNode::new(
+                        format!("{}:{}:{}", connection_id, obj_type.as_str(), schema.name),
+                        obj_type.display_name().to_string(),
+                        obj_type,
+                    );
+                    schema_node.add_child(type_node);
+                }
+
+                root.add_child(schema_node);
+            }
+
+            // 添加扩展节点（通常在顶层）
+            let extensions = DatabaseStructureQuery::get_extensions(pool).await?;
+            if !extensions.is_empty() {
+                let mut ext_node = DatabaseTreeNode::new(
+                    format!("{}:extensions", connection_id),
+                    "Extensions".to_string(),
+                    DatabaseObjectType::Extension,
+                );
+
+                for extension in extensions {
+                    let ext_item = DatabaseTreeNode::new(
+                        format!("{}:extension:{}", connection_id, extension.name),
+                        format!("{} ({})", extension.name, extension.version),
+                        DatabaseObjectType::Extension,
+                    );
+                    ext_node.add_child(ext_item);
+                }
+
+                root.add_child(ext_node);
+            }
+
+            self.database_structures
+                .insert(connection_id.to_string(), root);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "No active connection found for: {}",
+                connection_id
+            ))
+        }
+    }
+
+    /// 获取数据库结构树
+    pub fn get_database_structure(&self, connection_id: &str) -> Option<&DatabaseTreeNode> {
+        self.database_structures.get(connection_id)
+    }
+
+    /// 加载特定类型的对象
+    pub async fn load_objects(
+        &mut self,
+        connection_id: &str,
+        schema: &str,
+        object_type: DatabaseObjectType,
+    ) -> Result<Vec<DatabaseTreeNode>> {
+        if let Some(pool) = self.get_pool(connection_id) {
+            let mut objects = Vec::new();
+
+            match object_type {
+                DatabaseObjectType::Table => {
+                    let tables = DatabaseStructureQuery::get_tables(pool, Some(schema)).await?;
+                    for table in tables {
+                        let table_node = DatabaseTreeNode::new(
+                            format!("{}:table:{}:{}", connection_id, schema, table.name),
+                            table.name,
+                            DatabaseObjectType::Table,
+                        );
+                        objects.push(table_node);
+                    }
+                }
+                DatabaseObjectType::Function => {
+                    let functions =
+                        DatabaseStructureQuery::get_functions(pool, Some(schema)).await?;
+                    for function in functions {
+                        let func_node = DatabaseTreeNode::new(
+                            format!("{}:function:{}:{}", connection_id, schema, function.name),
+                            format!("{} ({})", function.name, function.return_type),
+                            DatabaseObjectType::Function,
+                        );
+                        objects.push(func_node);
+                    }
+                }
+                DatabaseObjectType::Index => {
+                    let indexes = DatabaseStructureQuery::get_indexes(pool, Some(schema)).await?;
+                    for index in indexes {
+                        let index_node = DatabaseTreeNode::new(
+                            format!("{}:index:{}:{}", connection_id, schema, index.index_name),
+                            format!("{} ({})", index.index_name, index.table_name),
+                            DatabaseObjectType::Index,
+                        );
+                        objects.push(index_node);
+                    }
+                }
+                DatabaseObjectType::Type => {
+                    let types = DatabaseStructureQuery::get_types(pool, Some(schema)).await?;
+                    for type_info in types {
+                        let type_node = DatabaseTreeNode::new(
+                            format!("{}:type:{}:{}", connection_id, schema, type_info.name),
+                            format!("{} ({})", type_info.name, type_info.type_category),
+                            DatabaseObjectType::Type,
+                        );
+                        objects.push(type_node);
+                    }
+                }
+                _ => {}
+            }
+
+            Ok(objects)
+        } else {
+            Err(anyhow::anyhow!(
+                "No active connection found for: {}",
+                connection_id
+            ))
+        }
+    }
+
+    /// 检查连接是否活跃
+    pub fn is_connected(&self, connection_id: &str) -> bool {
+        self.active_pools.contains_key(connection_id)
+    }
+
+    /// 获取活跃连接列表
+    pub fn get_active_connections(&self) -> Vec<String> {
+        self.active_pools.keys().cloned().collect()
     }
 }
 

@@ -8,7 +8,9 @@ use gpui_component::{
     label::Label,
 };
 
-use crate::database::{ConnectionManager, DatabaseConnection};
+use crate::database::{ConnectionManager, DatabaseConnection, DatabaseManager};
+use crate::database_structure::{DatabaseObjectType, DatabaseTreeNode};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub enum DatabaseNavigatorEvent {
@@ -19,11 +21,16 @@ pub enum DatabaseNavigatorEvent {
     ConnectionConnected(String),
     ConnectionDisconnected(String),
     NewConnectionRequested,
+    ObjectSelected(String, DatabaseObjectType), // object_id, object_type
+    StructureExpanded(String, String),          // connection_id, node_id
 }
 
 pub struct DatabaseNavigator {
     connection_manager: ConnectionManager,
+    database_manager: DatabaseManager,
     selected_connection_id: Option<String>,
+    expanded_nodes: HashMap<String, bool>,
+    loading_connections: HashMap<String, bool>,
 }
 
 impl EventEmitter<DatabaseNavigatorEvent> for DatabaseNavigator {}
@@ -36,7 +43,10 @@ impl DatabaseNavigator {
 
         cx.new(|_| Self {
             connection_manager,
+            database_manager: DatabaseManager::new(),
             selected_connection_id: None,
+            expanded_nodes: HashMap::new(),
+            loading_connections: HashMap::new(),
         })
     }
 
@@ -79,6 +89,12 @@ impl DatabaseNavigator {
 
     fn connect_to_database(&mut self, connection_id: String, cx: &mut Context<Self>) {
         if let Some(connection) = self.connection_manager.connections.get_mut(&connection_id) {
+            // Set loading state
+            self.loading_connections.insert(connection_id.clone(), true);
+            cx.notify();
+
+            // Simplified connection - just update the state
+            self.loading_connections.remove(&connection_id);
             connection.set_active(true);
             self.save_connections();
             cx.emit(DatabaseNavigatorEvent::ConnectionConnected(connection_id));
@@ -97,72 +113,16 @@ impl DatabaseNavigator {
         }
     }
 
-    fn render_connection_item(&self, connection: &DatabaseConnection) -> impl IntoElement {
-        let connection_id = connection.id.clone();
-        let is_selected = self.selected_connection_id.as_ref() == Some(&connection.id);
-        let is_active = connection.is_active;
+    // Simplified render method - connection items are now rendered inline in the main render method
+    // This avoids lifetime issues with cx
 
-        div()
-            .flex()
-            .items_center()
-            .w_full()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .hover(|style| style.bg(rgb(0xf8f9fa)))
-            .when(is_selected, |style| style.bg(rgb(0xe3f2fd)))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_1()
-                    .child(
-                        // Connection status indicator
-                        div().w(px(8.0)).h(px(8.0)).rounded_full().bg(if is_active {
-                            rgb(0x4caf50) // Green for connected
-                        } else {
-                            rgb(0x9e9e9e) // Gray for disconnected
-                        }),
-                    )
-                    .child(
-                        // Database icon
-                        div().child(IconName::SquareTerminal),
-                    )
-                    .child(
-                        // Connection details
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .child(
-                                Label::new(connection.name.clone())
-                                    .text_sm()
-                                    .font_medium()
-                                    .text_color(if is_active {
-                                        rgb(0x212529)
-                                    } else {
-                                        rgb(0x6c757d)
-                                    }),
-                            )
-                            .child(
-                                Label::new(format!("{}:{}", connection.host, connection.port))
-                                    .text_xs()
-                                    .text_color(rgb(0x9e9e9e)),
-                            ),
-                    ),
-            )
-            .child(
-                // Toggle connection button
-                Button::new("connection_toggle")
-                    .icon(if is_active {
-                        IconName::CircleX
-                    } else {
-                        IconName::Globe
-                    })
-                    .ghost()
-                    .tooltip(if is_active { "Disconnect" } else { "Connect" }),
-            )
+    // Database structure rendering will be implemented in future updates
+    fn render_database_structure(
+        &self,
+        _node: &DatabaseTreeNode,
+        _depth: usize,
+    ) -> impl IntoElement {
+        div().child("Database structure coming soon...")
     }
 
     fn handle_new_connection(&mut self, cx: &mut Context<Self>) {
@@ -247,7 +207,118 @@ impl Render for DatabaseNavigator {
                             div().flex().flex_col().p_2().gap_1().children(
                                 connections
                                     .into_iter()
-                                    .map(|connection| self.render_connection_item(connection))
+                                    .map(|connection| {
+                                        let connection_id = connection.id.clone();
+                                        let is_active = connection.is_active;
+                                        let is_loading = self
+                                            .loading_connections
+                                            .get(&connection.id)
+                                            .copied()
+                                            .unwrap_or(false);
+
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .w_full()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .hover(|style| style.bg(rgb(0xf8f9fa)))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .flex_1()
+                                                    .child(
+                                                        // Connection status indicator
+                                                        div()
+                                                            .w(px(8.0))
+                                                            .h(px(8.0))
+                                                            .rounded_full()
+                                                            .bg(if is_loading {
+                                                                rgb(0xffc107) // Yellow for loading
+                                                            } else if is_active {
+                                                                rgb(0x4caf50) // Green for connected
+                                                            } else {
+                                                                rgb(0x9e9e9e) // Gray for disconnected
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        // Database icon
+                                                        div().child(IconName::SquareTerminal),
+                                                    )
+                                                    .child(
+                                                        // Connection details
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .flex_1()
+                                                            .child(
+                                                                Label::new(if is_loading {
+                                                                    format!(
+                                                                        "{} (Connecting...)",
+                                                                        connection.name
+                                                                    )
+                                                                } else {
+                                                                    connection.name.clone()
+                                                                })
+                                                                .text_sm()
+                                                                .font_medium()
+                                                                .text_color(if is_active {
+                                                                    rgb(0x212529)
+                                                                } else {
+                                                                    rgb(0x6c757d)
+                                                                }),
+                                                            )
+                                                            .child(
+                                                                Label::new(format!(
+                                                                    "{}:{}",
+                                                                    connection.host,
+                                                                    connection.port
+                                                                ))
+                                                                .text_xs()
+                                                                .text_color(rgb(0x9e9e9e)),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                // Toggle connection button with proper event handling
+                                                Button::new("connection_toggle")
+                                                    .icon(if is_loading {
+                                                        IconName::Globe
+                                                    } else if is_active {
+                                                        IconName::CircleX
+                                                    } else {
+                                                        IconName::Globe
+                                                    })
+                                                    .ghost()
+                                                    .tooltip(if is_loading {
+                                                        "Connecting..."
+                                                    } else if is_active {
+                                                        "Disconnect"
+                                                    } else {
+                                                        "Connect"
+                                                    })
+                                                    .when(!is_loading, |button| {
+                                                        button.on_click(cx.listener(
+                                                            move |this, _event, _view, cx| {
+                                                                if is_active {
+                                                                    this.disconnect_from_database(
+                                                                        connection_id.clone(),
+                                                                        cx,
+                                                                    );
+                                                                } else {
+                                                                    this.connect_to_database(
+                                                                        connection_id.clone(),
+                                                                        cx,
+                                                                    );
+                                                                }
+                                                            },
+                                                        ))
+                                                    }),
+                                            )
+                                    })
                                     .collect::<Vec<_>>(),
                             ),
                         )

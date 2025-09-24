@@ -1,4 +1,4 @@
-mod actions;
+pub mod actions;
 mod assets;
 mod connection_dialog;
 mod database;

@@ -1,9 +1,10 @@
 use gpui::{
-    App, Context, Entity, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Subscription,
-    Window, div, prelude::*, px, rgb, rgba,
+    App, Context, Entity, FocusHandle, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString,
+    Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_component::{self, StyledExt, TitleBar};
 
+use crate::actions::ToggleDatabaseNavigator;
 use crate::connection_dialog::ConnectionDialogEvent;
 use crate::database_navigator::DatabaseNavigatorEvent;
 use crate::statusbar::StatusBarEvent;
@@ -24,6 +25,7 @@ pub struct MainWindow {
     resize_start_width: f32,
     _navigator_subscription: Option<Subscription>,
     _statusbar_subscription: Option<Subscription>,
+    focus_handle: FocusHandle,
 }
 
 impl MainWindow {
@@ -32,6 +34,7 @@ impl MainWindow {
         let toolbar = cx.new(|_| ToolBar::new());
         let statusbar = cx.new(|_| StatusBar::new().with_database_navigator_visible(true));
         let database_navigator = DatabaseNavigator::new(cx);
+        let focus_handle = cx.focus_handle();
 
         Self {
             title,
@@ -48,10 +51,11 @@ impl MainWindow {
             resize_start_width: 0.0,
             _navigator_subscription: None,
             _statusbar_subscription: None,
+            focus_handle,
         }
     }
 
-    pub fn toggle_database_navigator(&mut self, cx: &mut Context<Self>) {
+    fn _toggle_database_navigator(&mut self, cx: &mut Context<Self>) {
         self.database_navigator_visible = !self.database_navigator_visible;
         // 更新状态栏的显示状态
         self.statusbar.update(cx, |statusbar, cx| {
@@ -59,6 +63,15 @@ impl MainWindow {
             cx.notify();
         });
         cx.notify();
+    }
+
+    pub fn toggle_database_navigator(
+        &mut self,
+        _: &ToggleDatabaseNavigator,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._toggle_database_navigator(cx);
     }
 
     pub fn is_database_navigator_visible(&self) -> bool {
@@ -121,7 +134,7 @@ impl MainWindow {
         match event {
             StatusBarEvent::ToggleDatabaseNavigator => {
                 println!("Receive ToggleDatabaseNavigator");
-                self.toggle_database_navigator(cx);
+                self._toggle_database_navigator(cx);
             }
         }
     }
@@ -170,6 +183,8 @@ impl Render for MainWindow {
         }
 
         div()
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::toggle_database_navigator))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _view, cx| {
                 if this.is_resizing_navigator {
                     this.update_resize(event.position.x.0, cx);

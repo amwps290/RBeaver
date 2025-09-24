@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use tokio_postgres::{Client, NoTls};
 
 use crate::database_structure::{
-    DatabaseObject, DatabaseObjectType, DatabaseStructureQuery, DatabaseTreeNode, DbExtensionInfo,
-    DbFunctionInfo, DbIndexInfo, DbTableInfo as StructTableInfo, DbTypeInfo,
+    DatabaseObjectType, DatabaseStructureQuery, DatabaseTreeNode,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

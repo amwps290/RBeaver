@@ -8,7 +8,6 @@ use gpui_component::{
     input::*,
     label::Label,
 };
-use sqlx::types::Text;
 
 use crate::database::{ConnectionTestResult, DatabaseConnection};
 

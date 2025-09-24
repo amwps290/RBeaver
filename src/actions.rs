@@ -1,4 +1,4 @@
-use gpui::{App, actions};
+use gpui::{actions, App};
 
 // Define action types using GPUI's actions! macro
 actions!(
@@ -140,11 +140,6 @@ pub fn init_actions(cx: &mut App) {
     // View actions
     cx.on_action(|_: &ViewDatabaseNavigator, _cx| {
         println!("View > Database Navigator - Toggling database navigator panel");
-        // TODO: Toggle database navigator panel
-    });
-
-    cx.on_action(|_: &ToggleDatabaseNavigator, _cx| {
-        println!("Toggle Database Navigator - Toggling database navigator panel");
         // TODO: Toggle database navigator panel
     });
 

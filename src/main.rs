@@ -1,15 +1,20 @@
 use gpui::{
-    App, Application, Bounds, Context, Corners, Hsla, MouseButton, Pixels, SharedString, Size,
-    Window, WindowBounds, WindowKind, WindowOptions, actions, prelude::*, px, size,
+    App, Application, Bounds, KeyBinding, WindowBounds, WindowKind, WindowOptions, prelude::*, px,
+    size,
 };
 use gpui_component::{self, Root, TitleBar};
-use rbeaver::{Assets, MainWindow, init_actions};
+use rbeaver::{Assets, MainWindow, actions::ToggleDatabaseNavigator, init_actions};
 
 fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         gpui_component::init(cx);
         init_actions(cx);
 
+        cx.bind_keys(vec![KeyBinding::new(
+            "ctrl-b",
+            ToggleDatabaseNavigator,
+            None,
+        )]);
         let mut window_size = size(px(1600.0), px(1200.0));
         if let Some(display) = cx.primary_display() {
             let display_size = display.bounds().size;

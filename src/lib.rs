@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod tree;
 mod assets;
 mod connection_dialog;
 mod database;

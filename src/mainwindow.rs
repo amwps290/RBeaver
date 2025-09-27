@@ -183,7 +183,6 @@ impl Render for MainWindow {
         }
 
         div()
-            .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::toggle_database_navigator))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _view, cx| {
                 if this.is_resizing_navigator {
@@ -221,6 +220,7 @@ impl Render for MainWindow {
             .child(
                 // 主内容区域，占据剩余空间
                 div()
+                    .track_focus(&self.focus_handle)
                     .flex_1()
                     .flex()
                     .flex_row()

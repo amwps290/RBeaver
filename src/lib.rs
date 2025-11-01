@@ -6,7 +6,6 @@ mod database_navigator;
 mod database_structure;
 mod database_test;
 mod mainwindow;
-mod menubar;
 mod statusbar;
 mod toolbar;
 
@@ -21,6 +20,5 @@ pub use database_structure::{
 };
 pub use database_test::{DatabaseTest, run_database_tests};
 pub use mainwindow::MainWindow;
-pub use menubar::MenuBar;
 pub use statusbar::StatusBar;
 pub use toolbar::ToolBar;

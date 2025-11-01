@@ -2,17 +2,17 @@ use gpui::{
     App, Context, Entity, FocusHandle, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString,
     Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
-use gpui_component::{self, StyledExt, TitleBar};
+use gpui_component::{self, menu::AppMenuBar, StyledExt, TitleBar};
 
 use crate::actions::ToggleDatabaseNavigator;
 use crate::connection_dialog::ConnectionDialogEvent;
 use crate::database_navigator::DatabaseNavigatorEvent;
 use crate::statusbar::StatusBarEvent;
-use crate::{ConnectionDialog, DatabaseConnection, DatabaseNavigator, MenuBar, StatusBar, ToolBar};
+use crate::{ConnectionDialog, DatabaseConnection, DatabaseNavigator, StatusBar, ToolBar};
 
 pub struct MainWindow {
     title: SharedString,
-    top_menubar: Entity<MenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     toolbar: Entity<ToolBar>,
     statusbar: Entity<StatusBar>,
     database_navigator: Entity<DatabaseNavigator>,
@@ -29,8 +29,8 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    pub fn new(title: SharedString, _window: &mut Window, cx: &mut App) -> Self {
-        let top_menubar = cx.new(|_| MenuBar {});
+    pub fn new(title: SharedString, window: &mut Window, cx: &mut App) -> Self {
+        let app_menu_bar = AppMenuBar::new(window, cx);
         let toolbar = cx.new(|_| ToolBar::new());
         let statusbar = cx.new(|_| StatusBar::new().with_database_navigator_visible(true));
         let database_navigator = DatabaseNavigator::new(cx);
@@ -38,7 +38,7 @@ impl MainWindow {
 
         Self {
             title,
-            top_menubar,
+            app_menu_bar,
             toolbar,
             statusbar,
             database_navigator,
@@ -186,7 +186,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(Self::toggle_database_navigator))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _view, cx| {
                 if this.is_resizing_navigator {
-                    this.update_resize(event.position.x.0, cx);
+                    this.update_resize(event.position.x.into(), cx);
                 }
             }))
             .on_mouse_up(
@@ -211,8 +211,16 @@ impl Render for MainWindow {
                             .child(div().ml_auto().w(px(12.)).h_full()),
                     ),
             )
-            .child(self.top_menubar.clone())
             // 菜单栏分割线
+            .child(div().w_full().h(px(1.0)).bg(rgb(0xced4da)))
+            // 菜单栏容器，限制高度防止占据全部空间
+            .child(
+                div()
+                    .h(px(32.0))
+                    .w_full()
+                    .child(self.app_menu_bar.clone())
+            )
+            // 工具栏分割线
             .child(div().w_full().h(px(1.0)).bg(rgb(0xced4da)))
             .child(self.toolbar.clone())
             // 工具栏分割线
@@ -257,14 +265,14 @@ impl Render for MainWindow {
                                             gpui::MouseButton::Left,
                                             cx.listener(
                                                 |this, event: &MouseDownEvent, _view, cx| {
-                                                    this.start_resize(event.position.x.0, cx);
+                                                    this.start_resize(event.position.x.into(), cx);
                                                 },
                                             ),
                                         )
                                         .on_mouse_move(cx.listener(
                                             |this, event: &MouseMoveEvent, _view, cx| {
                                                 if this.is_resizing_navigator {
-                                                    this.update_resize(event.position.x.0, cx);
+                                                    this.update_resize(event.position.x.into(), cx);
                                                 }
                                             },
                                         ))

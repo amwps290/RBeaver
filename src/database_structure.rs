@@ -1,7 +1,8 @@
 use anyhow::Result;
+use postgres::{Client, Row};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
 use std::collections::HashMap;
+
 
 /// 数据库对象类型枚举
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -31,6 +32,23 @@ impl DatabaseObjectType {
             DatabaseObjectType::Procedure => "procedure",
             DatabaseObjectType::Sequence => "sequence",
             DatabaseObjectType::Trigger => "trigger",
+        }
+    }
+
+    /// 从字符串创建 DatabaseObjectType
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "schema" => DatabaseObjectType::Schema,
+            "extension" => DatabaseObjectType::Extension,
+            "table" => DatabaseObjectType::Table,
+            "view" => DatabaseObjectType::View,
+            "index" => DatabaseObjectType::Index,
+            "type" => DatabaseObjectType::Type,
+            "function" => DatabaseObjectType::Function,
+            "procedure" => DatabaseObjectType::Procedure,
+            "sequence" => DatabaseObjectType::Sequence,
+            "trigger" => DatabaseObjectType::Trigger,
+            _ => DatabaseObjectType::Table,
         }
     }
 
@@ -200,7 +218,7 @@ pub struct DatabaseStructureQuery;
 
 impl DatabaseStructureQuery {
     /// 获取所有schema
-    pub async fn get_schemas(pool: &PgPool) -> Result<Vec<DatabaseObject>> {
+    pub fn get_schemas(client: &mut Client) -> Result<Vec<DatabaseObject>> {
         let sql = r#"
             SELECT
                 schema_name,
@@ -210,7 +228,7 @@ impl DatabaseStructureQuery {
             ORDER BY schema_name
         "#;
 
-        let rows = sqlx::query(sql).fetch_all(pool).await?;
+        let rows = client.query(sql, &[])?;
         let mut schemas = Vec::new();
 
         for row in rows {
@@ -228,7 +246,7 @@ impl DatabaseStructureQuery {
     }
 
     /// 获取所有扩展
-    pub async fn get_extensions(pool: &PgPool) -> Result<Vec<DbExtensionInfo>> {
+    pub fn get_extensions(client: &mut Client) -> Result<Vec<DbExtensionInfo>> {
         let sql = r#"
             SELECT
                 extname as name,
@@ -240,7 +258,7 @@ impl DatabaseStructureQuery {
             ORDER BY extname
         "#;
 
-        let rows = sqlx::query(sql).fetch_all(pool).await?;
+        let rows = client.query(sql, &[])?;
         let mut extensions = Vec::new();
 
         for row in rows {
@@ -258,10 +276,9 @@ impl DatabaseStructureQuery {
     }
 
     /// 获取表信息
-    pub async fn get_tables(pool: &PgPool, schema: Option<&str>) -> Result<Vec<DbTableInfo>> {
+    pub fn get_tables(client: &mut Client, schema: Option<&str>) -> Result<Vec<DbTableInfo>> {
         let sql = if let Some(schema) = schema {
-            format!(
-                r#"
+            r#"
                 SELECT
                     t.table_schema as schema,
                     t.table_name as name,
@@ -286,11 +303,9 @@ impl DatabaseStructureQuery {
                     SELECT DISTINCT event_object_table as table_name, event_object_schema as table_schema
                     FROM information_schema.triggers
                 ) tr ON tr.table_name = t.table_name AND tr.table_schema = t.table_schema
-                WHERE t.table_schema = '{}' AND t.table_type IN ('BASE TABLE', 'VIEW')
+                WHERE t.table_schema = $1 AND t.table_type IN ('BASE TABLE', 'VIEW')
                 ORDER BY t.table_name
-            "#,
-                schema
-            )
+            "#
         } else {
             r#"
                 SELECT
@@ -306,10 +321,14 @@ impl DatabaseStructureQuery {
                 WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
                 ORDER BY t.table_schema, t.table_name
             "#
-            .to_string()
         };
 
-        let rows = sqlx::query(&sql).fetch_all(pool).await?;
+        let rows = if let Some(schema) = schema {
+            client.query(sql, &[&schema])?
+        } else {
+            client.query(sql, &[])?
+        };
+
         let mut tables = Vec::new();
 
         for row in rows {
@@ -321,8 +340,8 @@ impl DatabaseStructureQuery {
                 has_indexes: row.try_get("has_indexes").unwrap_or(false),
                 has_rules: row.try_get("has_rules").unwrap_or(false),
                 has_triggers: row.try_get("has_triggers").unwrap_or(false),
-                row_count: None,  // Will be populated separately if needed
-                size_bytes: None, // Will be populated separately if needed
+                row_count: None,
+                size_bytes: None,
                 comment: row.try_get("comment").ok(),
             };
             tables.push(table);
@@ -332,8 +351,8 @@ impl DatabaseStructureQuery {
     }
 
     /// 获取表的列信息
-    pub async fn get_columns(
-        pool: &PgPool,
+    pub fn get_columns(
+        client: &mut Client,
         schema: &str,
         table: &str,
     ) -> Result<Vec<DbColumnInfo>> {
@@ -367,11 +386,7 @@ impl DatabaseStructureQuery {
             ORDER BY c.ordinal_position
         "#;
 
-        let rows = sqlx::query(sql)
-            .bind(schema)
-            .bind(table)
-            .fetch_all(pool)
-            .await?;
+        let rows = client.query(sql, &[&schema, &table])?;
 
         let mut columns = Vec::new();
         for row in rows {
@@ -393,10 +408,9 @@ impl DatabaseStructureQuery {
     }
 
     /// 获取索引信息
-    pub async fn get_indexes(pool: &PgPool, schema: Option<&str>) -> Result<Vec<DbIndexInfo>> {
+    pub fn get_indexes(client: &mut Client, schema: Option<&str>) -> Result<Vec<DbIndexInfo>> {
         let sql = if let Some(schema) = schema {
-            format!(
-                r#"
+            r#"
                 SELECT
                     schemaname as schema,
                     tablename as table_name,
@@ -405,11 +419,9 @@ impl DatabaseStructureQuery {
                     CASE WHEN indexdef LIKE '%UNIQUE%' THEN true ELSE false END as is_unique,
                     CASE WHEN indexname LIKE '%pkey' THEN true ELSE false END as is_primary
                 FROM pg_indexes
-                WHERE schemaname = '{}'
+                WHERE schemaname = $1
                 ORDER BY tablename, indexname
-            "#,
-                schema
-            )
+            "#
         } else {
             r#"
                 SELECT
@@ -423,10 +435,14 @@ impl DatabaseStructureQuery {
                 WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
                 ORDER BY schemaname, tablename, indexname
             "#
-            .to_string()
         };
 
-        let rows = sqlx::query(&sql).fetch_all(pool).await?;
+        let rows = if let Some(schema) = schema {
+            client.query(sql, &[&schema])?
+        } else {
+            client.query(sql, &[])?
+        };
+
         let mut indexes = Vec::new();
 
         for row in rows {
@@ -436,8 +452,8 @@ impl DatabaseStructureQuery {
                 index_name: row.get("index_name"),
                 is_unique: row.get("is_unique"),
                 is_primary: row.get("is_primary"),
-                columns: Vec::new(), // Will be parsed from indexdef if needed
-                index_type: "btree".to_string(), // Default, can be enhanced
+                columns: Vec::new(),
+                index_type: "btree".to_string(),
             };
             indexes.push(index);
         }
@@ -446,10 +462,9 @@ impl DatabaseStructureQuery {
     }
 
     /// 获取函数信息
-    pub async fn get_functions(pool: &PgPool, schema: Option<&str>) -> Result<Vec<DbFunctionInfo>> {
+    pub fn get_functions(client: &mut Client, schema: Option<&str>) -> Result<Vec<DbFunctionInfo>> {
         let sql = if let Some(schema) = schema {
-            format!(
-                r#"
+            r#"
                 SELECT
                     n.nspname as schema,
                     p.proname as name,
@@ -461,11 +476,9 @@ impl DatabaseStructureQuery {
                 FROM pg_proc p
                 JOIN pg_namespace n ON p.pronamespace = n.oid
                 JOIN pg_language l ON p.prolang = l.oid
-                WHERE n.nspname = '{}'
+                WHERE n.nspname = $1
                 ORDER BY p.proname
-            "#,
-                schema
-            )
+            "#
         } else {
             r#"
                 SELECT
@@ -482,10 +495,14 @@ impl DatabaseStructureQuery {
                 WHERE n.nspname NOT IN ('information_schema', 'pg_catalog')
                 ORDER BY n.nspname, p.proname
             "#
-            .to_string()
         };
 
-        let rows = sqlx::query(&sql).fetch_all(pool).await?;
+        let rows = if let Some(schema) = schema {
+            client.query(sql, &[&schema])?
+        } else {
+            client.query(sql, &[])?
+        };
+
         let mut functions = Vec::new();
 
         for row in rows {
@@ -493,7 +510,7 @@ impl DatabaseStructureQuery {
                 schema: row.get("schema"),
                 name: row.get("name"),
                 return_type: row.get("return_type"),
-                parameters: Vec::new(), // Can be enhanced to parse parameters
+                parameters: Vec::new(),
                 language: row.get("language"),
                 is_aggregate: row.get("is_aggregate"),
                 is_trigger: row.get("is_trigger"),
@@ -506,10 +523,9 @@ impl DatabaseStructureQuery {
     }
 
     /// 获取自定义类型信息
-    pub async fn get_types(pool: &PgPool, schema: Option<&str>) -> Result<Vec<DbTypeInfo>> {
+    pub fn get_types(client: &mut Client, schema: Option<&str>) -> Result<Vec<DbTypeInfo>> {
         let sql = if let Some(schema) = schema {
-            format!(
-                r#"
+            r#"
                 SELECT
                     n.nspname as schema,
                     t.typname as name,
@@ -525,11 +541,9 @@ impl DatabaseStructureQuery {
                 FROM pg_type t
                 JOIN pg_namespace n ON t.typnamespace = n.oid
                 JOIN pg_roles r ON t.typowner = r.oid
-                WHERE n.nspname = '{}' AND t.typtype IN ('c', 'e', 'd')
+                WHERE n.nspname = $1 AND t.typtype IN ('c', 'e', 'd')
                 ORDER BY t.typname
-            "#,
-                schema
-            )
+            "#
         } else {
             r#"
                 SELECT
@@ -549,10 +563,15 @@ impl DatabaseStructureQuery {
                 JOIN pg_roles r ON t.typowner = r.oid
                 WHERE n.nspname NOT IN ('information_schema', 'pg_catalog') AND t.typtype IN ('c', 'e', 'd')
                 ORDER BY n.nspname, t.typname
-            "#.to_string()
+            "#
         };
 
-        let rows = sqlx::query(&sql).fetch_all(pool).await?;
+        let rows = if let Some(schema) = schema {
+            client.query(sql, &[&schema])?
+        } else {
+            client.query(sql, &[])?
+        };
+
         let mut types = Vec::new();
 
         for row in rows {
@@ -614,3 +633,6 @@ impl DatabaseTreeNode {
         self.is_expanded = !self.is_expanded;
     }
 }
+
+// 重新导出 LazyTreeNode
+pub use crate::lazy_tree::{LazyTreeNode, LazyLoadEvent};

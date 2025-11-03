@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git checkout HEAD -- src/main.rs)"
+      "Bash(grep -B5 \"cannot borrow \\`pool\\`\")",
+      "Bash(grep -B10 \"cannot borrow \\`pool\\`\")",
+      "Bash(grep -A5 \"cannot borrow \\`pool\\`\")",
+      "Bash(cargo build)",
+      "Bash(cargo check)",
+      "Bash(cargo run)"
     ],
     "deny": [],
     "ask": []

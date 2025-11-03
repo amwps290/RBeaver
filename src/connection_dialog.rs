@@ -144,13 +144,8 @@ impl ConnectionDialog {
                 self.validation_errors.clear();
                 cx.notify();
 
-                // 为了简化，我们暂时使用同步方式进行测试
-                // 在实际应用中，应该使用异步方式避免阻塞UI
-                let result = {
-                    // 创建 tokio runtime 并执行测试
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(async { connection.test_connection().await })
-                };
+                // 使用同步方式测试连接（数据库操作是同步的）
+                let result = connection.test_connection();
 
                 // 更新测试结果
                 self.is_testing = false;

@@ -1,11 +1,11 @@
 use anyhow::Result;
-use deadpool_postgres::{Config, Pool, Runtime};
+use postgres::{Client, NoTls};
+use r2d2::{Pool};
+use r2d2_postgres::PostgresConnectionManager;
 use serde::{Deserialize, Serialize};
-use sqlx::{Column, PgPool, Row, TypeInfo};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use tokio_postgres::{Client, NoTls};
 
 use crate::database_structure::{
     DatabaseObjectType, DatabaseStructureQuery, DatabaseTreeNode,
@@ -13,7 +13,6 @@ use crate::database_structure::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConnection {
-    pub id: String,
     pub name: String,
     pub host: String,
     pub port: u16,
@@ -76,7 +75,6 @@ impl std::fmt::Display for SslMode {
 impl Default for DatabaseConnection {
     fn default() -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
             name: "New Connection".to_string(),
             host: "localhost".to_string(),
             port: 5432,
@@ -111,19 +109,19 @@ impl ConnectionManager {
     }
 
     pub fn add_connection(&mut self, connection: DatabaseConnection) {
-        self.connections.insert(connection.id.clone(), connection);
+        self.connections.insert(connection.name.clone(), connection);
     }
 
     pub fn update_connection(&mut self, connection: DatabaseConnection) {
-        self.connections.insert(connection.id.clone(), connection);
+        self.connections.insert(connection.name.clone(), connection);
     }
 
-    pub fn remove_connection(&mut self, id: &str) {
-        self.connections.remove(id);
+    pub fn remove_connection(&mut self, name: &str) {
+        self.connections.remove(name);
     }
 
-    pub fn get_connection(&self, id: &str) -> Option<&DatabaseConnection> {
-        self.connections.get(id)
+    pub fn get_connection(&self, name: &str) -> Option<&DatabaseConnection> {
+        self.connections.get(name)
     }
 
     pub fn get_all_connections(&self) -> Vec<&DatabaseConnection> {
@@ -171,9 +169,9 @@ impl DatabaseConnection {
         )
     }
 
-    pub async fn test_connection(&self) -> ConnectionTestResult {
+    pub fn test_connection(&self) -> ConnectionTestResult {
         match self.validate() {
-            Ok(_) => match self.create_tokio_postgres_client().await {
+            Ok(_) => match self.create_client() {
                 Ok(_) => ConnectionTestResult::Success,
                 Err(e) => ConnectionTestResult::Failed(format!("Connection failed: {}", e)),
             },
@@ -181,59 +179,35 @@ impl DatabaseConnection {
         }
     }
 
-    /// Create a tokio-postgres client for direct database operations
-    pub async fn create_tokio_postgres_client(&self) -> Result<Client> {
+    /// Create a synchronous postgres client for database operations
+    pub fn create_client(&self) -> Result<Client> {
         let config = format!(
             "host={} port={} user={} password={} dbname={} sslmode={}",
             self.host, self.port, self.username, self.password, self.database, self.ssl_mode
         );
 
-        let (client, connection) = tokio_postgres::connect(&config, NoTls).await?;
-
-        // Spawn the connection task
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("Connection error: {}", e);
-            }
-        });
-
+        let client = Client::connect(&config, NoTls)?;
         Ok(client)
     }
 
-    /// Create a deadpool connection pool for high-performance applications
-    pub async fn create_connection_pool(&self) -> Result<Pool> {
-        let mut cfg = Config::new();
-        cfg.host = Some(self.host.clone());
-        cfg.port = Some(self.port);
-        cfg.user = Some(self.username.clone());
-        cfg.password = Some(self.password.clone());
-        cfg.dbname = Some(self.database.clone());
+    /// Create a r2d2 connection pool for high-performance applications
+    pub fn create_connection_pool(&self) -> Result<Pool<PostgresConnectionManager<NoTls>>> {
+        let config = format!(
+            "host={} port={} user={} password={} dbname={} sslmode={}",
+            self.host, self.port, self.username, self.password, self.database, self.ssl_mode
+        );
 
-        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
+        let manager = PostgresConnectionManager::new(config.parse()?, NoTls);
+        let pool = Pool::new(manager)?;
         Ok(pool)
     }
 
-    /// Create a SQLx connection pool for query building and migrations
-    pub async fn create_sqlx_pool(&self) -> Result<PgPool> {
-        let database_url = self.connection_string();
-        let pool = PgPool::connect(&database_url).await?;
-        Ok(pool)
-    }
-
-    /// Test connection using SQLx (alternative method)
-    pub async fn test_connection_sqlx(&self) -> ConnectionTestResult {
+    /// Test connection using synchronous client
+    pub fn test_connection_sync(&self) -> ConnectionTestResult {
         match self.validate() {
             Ok(_) => {
-                match self.create_sqlx_pool().await {
-                    Ok(pool) => {
-                        // Test with a simple query
-                        match sqlx::query("SELECT 1 as test").fetch_one(&pool).await {
-                            Ok(_) => ConnectionTestResult::Success,
-                            Err(e) => {
-                                ConnectionTestResult::Failed(format!("Query test failed: {}", e))
-                            }
-                        }
-                    }
+                match self.create_client() {
+                    Ok(_) => ConnectionTestResult::Success,
                     Err(e) => ConnectionTestResult::Failed(format!("Connection failed: {}", e)),
                 }
             }
@@ -242,29 +216,25 @@ impl DatabaseConnection {
     }
 
     /// Execute a simple query to get database information
-    pub async fn get_database_info(&self) -> Result<DatabaseInfo> {
-        let pool = self.create_sqlx_pool().await?;
+    pub fn get_database_info(&self) -> Result<DatabaseInfo> {
+        let mut client = self.create_client()?;
 
-        let version_row = sqlx::query("SELECT version()").fetch_one(&pool).await?;
+        let version_row = client.query_one("SELECT version()", &[])?;
         let version: String = version_row.get(0);
 
-        let size_row = sqlx::query("SELECT pg_database_size(current_database())")
-            .fetch_one(&pool)
-            .await?;
+        let size_row = client.query_one("SELECT pg_database_size(current_database())", &[])?;
         let size: i64 = size_row.get(0);
 
-        let tables_row = sqlx::query(
+        let tables_row = client.query_one(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
-        )
-        .fetch_one(&pool)
-        .await?;
+            &[],
+        )?;
         let table_count: i64 = tables_row.get(0);
 
         Ok(DatabaseInfo {
             version,
             size_bytes: size,
             table_count,
-            connection_id: self.id.clone(),
         })
     }
 
@@ -307,13 +277,12 @@ pub struct DatabaseInfo {
     pub version: String,
     pub size_bytes: i64,
     pub table_count: i64,
-    pub connection_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DatabaseManager {
     pub connection_manager: ConnectionManager,
-    pub active_pools: HashMap<String, PgPool>,
+    pub active_pools: HashMap<String, Pool<PostgresConnectionManager<NoTls>>>,
     pub database_structures: HashMap<String, DatabaseTreeNode>,
 }
 
@@ -332,13 +301,13 @@ impl DatabaseManager {
         Self::default()
     }
 
-    pub async fn connect(&mut self, connection_id: &str) -> Result<()> {
+    pub fn connect(&mut self, connection_id: &str) -> Result<()> {
         if let Some(conn) = self.connection_manager.get_connection(connection_id) {
-            let pool = conn.create_sqlx_pool().await?;
+            let pool = conn.create_connection_pool()?;
             self.active_pools.insert(connection_id.to_string(), pool);
 
             // Load database structure after successful connection
-            let _ = self.load_database_structure(connection_id).await;
+            let _ = self.load_database_structure(connection_id);
 
             Ok(())
         } else {
@@ -346,88 +315,20 @@ impl DatabaseManager {
         }
     }
 
-    pub async fn disconnect(&mut self, connection_id: &str) {
+    pub fn disconnect(&mut self, connection_id: &str) {
         if let Some(pool) = self.active_pools.remove(connection_id) {
-            pool.close().await;
+            drop(pool);
         }
-        // Remove cached database structure
         self.database_structures.remove(connection_id);
     }
 
-    pub fn get_pool(&self, connection_id: &str) -> Option<&PgPool> {
+    pub fn get_pool(&self, connection_id: &str) -> Option<&Pool<PostgresConnectionManager<NoTls>>> {
         self.active_pools.get(connection_id)
     }
 
-    pub async fn execute_query(
-        &self,
-        connection_id: &str,
-        sql: &str,
-    ) -> Result<Vec<serde_json::Value>> {
+    pub fn get_pooled_client(&self, connection_id: &str) -> Result<r2d2::PooledConnection<PostgresConnectionManager<NoTls>>> {
         if let Some(pool) = self.get_pool(connection_id) {
-            let rows = sqlx::query(sql).fetch_all(pool).await?;
-
-            let mut results = Vec::new();
-            for row in rows {
-                let mut json_row = serde_json::Map::new();
-
-                // Convert each column to JSON value
-                for (i, column) in row.columns().iter().enumerate() {
-                    let column_name = column.name();
-
-                    // Handle different PostgreSQL types
-                    let value: serde_json::Value = match column.type_info().name() {
-                        "INT4" => {
-                            let val: Option<i32> = row.try_get(i).ok();
-                            match val {
-                                Some(v) => serde_json::Value::Number(v.into()),
-                                None => serde_json::Value::Null,
-                            }
-                        }
-                        "INT8" => {
-                            let val: Option<i64> = row.try_get(i).ok();
-                            match val {
-                                Some(v) => serde_json::Value::Number(v.into()),
-                                None => serde_json::Value::Null,
-                            }
-                        }
-                        "TEXT" | "VARCHAR" => {
-                            let val: Option<String> = row.try_get(i).ok();
-                            match val {
-                                Some(v) => serde_json::Value::String(v),
-                                None => serde_json::Value::Null,
-                            }
-                        }
-                        "BOOL" => {
-                            let val: Option<bool> = row.try_get(i).ok();
-                            match val {
-                                Some(v) => serde_json::Value::Bool(v),
-                                None => serde_json::Value::Null,
-                            }
-                        }
-                        "TIMESTAMPTZ" | "TIMESTAMP" => {
-                            let val: Option<chrono::DateTime<chrono::Utc>> = row.try_get(i).ok();
-                            match val {
-                                Some(v) => serde_json::Value::String(v.to_rfc3339()),
-                                None => serde_json::Value::Null,
-                            }
-                        }
-                        _ => {
-                            // Try to get as string for unknown types
-                            let val: Option<String> = row.try_get(i).ok();
-                            match val {
-                                Some(v) => serde_json::Value::String(v),
-                                None => serde_json::Value::Null,
-                            }
-                        }
-                    };
-
-                    json_row.insert(column_name.to_string(), value);
-                }
-
-                results.push(serde_json::Value::Object(json_row));
-            }
-
-            Ok(results)
+            Ok(pool.get()?)
         } else {
             Err(anyhow::anyhow!(
                 "No active connection found for: {}",
@@ -436,7 +337,76 @@ impl DatabaseManager {
         }
     }
 
-    pub async fn get_tables(&self, connection_id: &str) -> Result<Vec<TableInfo>> {
+    pub fn execute_query(
+        &self,
+        connection_id: &str,
+        sql: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut pool = self.get_pooled_client(connection_id)?;
+        let rows = pool.query(sql, &[])?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let mut json_row = serde_json::Map::new();
+
+            for (i, column) in row.columns().iter().enumerate() {
+                let column_name = column.name();
+
+                let value: serde_json::Value = match column.type_().name() {
+                    "int4" => {
+                        let val: Option<i32> = row.get(i);
+                        match val {
+                            Some(v) => serde_json::Value::Number(v.into()),
+                            None => serde_json::Value::Null,
+                        }
+                    }
+                    "int8" => {
+                        let val: Option<i64> = row.get(i);
+                        match val {
+                            Some(v) => serde_json::Value::Number(v.into()),
+                            None => serde_json::Value::Null,
+                        }
+                    }
+                    "text" | "varchar" => {
+                        let val: Option<String> = row.get(i);
+                        match val {
+                            Some(v) => serde_json::Value::String(v),
+                            None => serde_json::Value::Null,
+                        }
+                    }
+                    "bool" => {
+                        let val: Option<bool> = row.get(i);
+                        match val {
+                            Some(v) => serde_json::Value::Bool(v),
+                            None => serde_json::Value::Null,
+                        }
+                    }
+                    "timestamptz" | "timestamp" => {
+                        let val: Option<String> = row.get(i);
+                        match val {
+                            Some(v) => serde_json::Value::String(v),
+                            None => serde_json::Value::Null,
+                        }
+                    }
+                    _ => {
+                        let val: Option<String> = row.get(i);
+                        match val {
+                            Some(v) => serde_json::Value::String(v),
+                            None => serde_json::Value::Null,
+                        }
+                    }
+                };
+
+                json_row.insert(column_name.to_string(), value);
+            }
+
+            results.push(serde_json::Value::Object(json_row));
+        }
+
+        Ok(results)
+    }
+
+    pub fn get_tables(&self, connection_id: &str) -> Result<Vec<TableInfo>> {
         let sql = "
             SELECT
                 schemaname,
@@ -450,33 +420,27 @@ impl DatabaseManager {
             ORDER BY tablename
         ";
 
-        if let Some(pool) = self.get_pool(connection_id) {
-            let rows = sqlx::query(sql).fetch_all(pool).await?;
+        let mut pool = self.get_pooled_client(connection_id)?;
+        let rows = pool.query(sql, &[])?;
 
-            let mut tables = Vec::new();
-            for row in rows {
-                let table = TableInfo {
-                    schema: row.get("schemaname"),
-                    name: row.get("tablename"),
-                    owner: row.get("tableowner"),
-                    has_indexes: row.get("hasindexes"),
-                    has_rules: row.get("hasrules"),
-                    has_triggers: row.get("hastriggers"),
-                };
-                tables.push(table);
-            }
-
-            Ok(tables)
-        } else {
-            Err(anyhow::anyhow!(
-                "No active connection found for: {}",
-                connection_id
-            ))
+        let mut tables = Vec::new();
+        for row in rows {
+            let table = TableInfo {
+                schema: row.get("schemaname"),
+                name: row.get("tablename"),
+                owner: row.get("tableowner"),
+                has_indexes: row.get("hasindexes"),
+                has_rules: row.get("hasrules"),
+                has_triggers: row.get("hastriggers"),
+            };
+            tables.push(table);
         }
+
+        Ok(tables)
     }
 
     /// 加载数据库结构
-    pub async fn load_database_structure(&mut self, connection_id: &str) -> Result<()> {
+    pub fn load_database_structure(&mut self, connection_id: &str) -> Result<()> {
         if let Some(pool) = self.get_pool(connection_id) {
             let mut root = DatabaseTreeNode::new(
                 connection_id.to_string(),
@@ -484,8 +448,10 @@ impl DatabaseManager {
                 DatabaseObjectType::Schema,
             );
 
+            let mut client = pool.get()?;
+
             // 获取schemas
-            let schemas = DatabaseStructureQuery::get_schemas(pool).await?;
+            let schemas = DatabaseStructureQuery::get_schemas(&mut client)?;
 
             for schema in schemas {
                 let mut schema_node = DatabaseTreeNode::new(
@@ -494,7 +460,6 @@ impl DatabaseManager {
                     DatabaseObjectType::Schema,
                 );
 
-                // 为每个schema添加对象类型节点
                 let object_types = vec![
                     DatabaseObjectType::Extension,
                     DatabaseObjectType::Table,
@@ -516,8 +481,8 @@ impl DatabaseManager {
                 root.add_child(schema_node);
             }
 
-            // 添加扩展节点（通常在顶层）
-            let extensions = DatabaseStructureQuery::get_extensions(pool).await?;
+            // 添加扩展节点
+            let extensions = DatabaseStructureQuery::get_extensions(&mut client)?;
             if !extensions.is_empty() {
                 let mut ext_node = DatabaseTreeNode::new(
                     format!("{}:extensions", connection_id),
@@ -554,18 +519,19 @@ impl DatabaseManager {
     }
 
     /// 加载特定类型的对象
-    pub async fn load_objects(
+    pub fn load_objects(
         &mut self,
         connection_id: &str,
         schema: &str,
         object_type: DatabaseObjectType,
     ) -> Result<Vec<DatabaseTreeNode>> {
         if let Some(pool) = self.get_pool(connection_id) {
+            let mut client = pool.get()?;
             let mut objects = Vec::new();
 
             match object_type {
                 DatabaseObjectType::Table => {
-                    let tables = DatabaseStructureQuery::get_tables(pool, Some(schema)).await?;
+                    let tables = DatabaseStructureQuery::get_tables(&mut client, Some(schema))?;
                     for table in tables {
                         let table_node = DatabaseTreeNode::new(
                             format!("{}:table:{}:{}", connection_id, schema, table.name),
@@ -577,7 +543,7 @@ impl DatabaseManager {
                 }
                 DatabaseObjectType::Function => {
                     let functions =
-                        DatabaseStructureQuery::get_functions(pool, Some(schema)).await?;
+                        DatabaseStructureQuery::get_functions(&mut client, Some(schema))?;
                     for function in functions {
                         let func_node = DatabaseTreeNode::new(
                             format!("{}:function:{}:{}", connection_id, schema, function.name),
@@ -588,7 +554,7 @@ impl DatabaseManager {
                     }
                 }
                 DatabaseObjectType::Index => {
-                    let indexes = DatabaseStructureQuery::get_indexes(pool, Some(schema)).await?;
+                    let indexes = DatabaseStructureQuery::get_indexes(&mut client, Some(schema))?;
                     for index in indexes {
                         let index_node = DatabaseTreeNode::new(
                             format!("{}:index:{}:{}", connection_id, schema, index.index_name),
@@ -599,7 +565,7 @@ impl DatabaseManager {
                     }
                 }
                 DatabaseObjectType::Type => {
-                    let types = DatabaseStructureQuery::get_types(pool, Some(schema)).await?;
+                    let types = DatabaseStructureQuery::get_types(&mut client, Some(schema))?;
                     for type_info in types {
                         let type_node = DatabaseTreeNode::new(
                             format!("{}:type:{}:{}", connection_id, schema, type_info.name),
@@ -646,13 +612,13 @@ pub struct TableInfo {
 pub mod utils {
     use super::*;
 
-    pub async fn test_all_connections(
+    pub fn test_all_connections(
         manager: &ConnectionManager,
     ) -> HashMap<String, ConnectionTestResult> {
         let mut results = HashMap::new();
 
         for (id, connection) in &manager.connections {
-            let result = connection.test_connection().await;
+            let result = connection.test_connection();
             results.insert(id.clone(), result);
         }
 

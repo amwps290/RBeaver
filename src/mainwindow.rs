@@ -36,6 +36,16 @@ impl MainWindow {
         let database_navigator = DatabaseNavigator::new(cx);
         let focus_handle = cx.focus_handle();
 
+        eprintln!("[MainWindow] Creating new main window");
+
+        // 加载已保存的数据库连接
+        database_navigator.update(cx, |nav, cx| {
+            nav.load_saved_connections(cx);
+            cx.notify();
+        });
+
+        eprintln!("[MainWindow] Main window created successfully");
+
         Self {
             title,
             app_menu_bar,
